@@ -16,8 +16,10 @@ def clean():
 def scenario(clean):
     corrupted, fault_log = apply_default_faults(clean)
     findings = detection.run_all(corrupted)
-    staged, flags, proposals, checks = remediation.run(corrupted, findings)
-    return corrupted, fault_log, findings, proposals, staged, flags, checks
+    staged, flags, proposals, checks, unresolved = remediation.run(
+        corrupted, findings)
+    return (corrupted, fault_log, findings, proposals, staged, flags, checks,
+            unresolved)
 
 
 # ---------------- data generation ----------------
@@ -163,7 +165,7 @@ def test_stale_and_injected_spike_get_proposals(scenario):
 
 def test_only_accepted_proposals_are_applied(scenario):
     """Regression test. Rejected repairs used to land in staging anyway."""
-    corrupted, _, _, proposals, staged, flags, checks = scenario
+    corrupted, _, _, proposals, staged, flags, checks, _ = scenario
     base = corrupted.ffill()
     for p, c in zip(proposals, checks):
         touched = (staged.loc[p["dates"], p["series"]]
@@ -176,7 +178,7 @@ def test_only_accepted_proposals_are_applied(scenario):
 def test_guardrail_scores_each_proposal_alone(scenario):
     """Regression test. Every proposal used to show the same VaR impact
     because the check measured the whole staged frame."""
-    _, _, _, _, _, _, checks = scenario
+    _, _, _, _, _, _, checks, _ = scenario
     impacts = {c["var_impact_pct"] for c in checks}
     assert len(impacts) > 1
 
@@ -187,13 +189,13 @@ def test_guardrail_never_sees_clean_data(scenario):
             "points", "type"} <= set(c)
 
 def test_staging_has_no_nans(scenario):
-    *_, staged, _, _ = scenario
+    _, _, _, _, staged, _, _, _ = scenario
     assert not staged.isna().any().any()
 
 def test_repair_moves_es_toward_clean(clean, scenario):
     """Expected shortfall is the metric that actually responds; see
     test_one_bad_point_moves_es_far_more_than_var for why."""
-    corrupted, _, _, _, staged, _, _ = scenario
+    corrupted, _, _, _, staged, _, _, _ = scenario
     e_clean = risk.expected_shortfall(risk.pnl_vector(clean))
     e_corrupt = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
     e_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
@@ -207,14 +209,14 @@ def test_proxy_fill_does_not_inject_a_jump(clean):
     the same range as real ones."""
     corrupted, _ = inject_stale(clean, "usd5y", "2026-06-01", 15)
     findings = detection.run_all(corrupted)
-    staged, *_ = remediation.run(corrupted, findings)
+    staged = remediation.run(corrupted, findings)[0]
     biggest_real = clean["usd5y"].diff().abs().max()
     assert staged["usd5y"].diff().abs().max() <= biggest_real * 1.5
 
 def test_proxy_fill_lands_on_next_real_observation(clean):
     corrupted, _ = inject_stale(clean, "usd5y", "2026-06-01", 15)
     findings = detection.run_all(corrupted)
-    staged, *_ = remediation.run(corrupted, findings)
+    staged = remediation.run(corrupted, findings)[0]
     after = clean.loc["2026-06-22":].index[0]
     step_into_real = abs(staged.loc[after, "usd5y"] - staged["usd5y"].shift(1)[after])
     assert step_into_real < clean["usd5y"].diff().abs().quantile(0.99)
@@ -324,7 +326,7 @@ def test_narrative_falls_back_without_key(monkeypatch):
     assert "template" in source and agent.numbers_check(text, facts)
 
 def test_build_facts_matches_scenario(scenario):
-    _, _, findings, _, _, _, checks = scenario
+    _, _, findings, _, _, _, checks, _ = scenario
     facts = agent.build_facts(findings, checks, 2_620_000, 2_580_000)
     assert facts["n_findings"] == len(findings)
     assert facts["n_accepted"] == sum(c["accepted"] for c in checks)
@@ -341,3 +343,57 @@ def test_csv_snapshot_matches_generator(clean):
     on_disk = export.load_clean()
     pd.testing.assert_frame_equal(on_disk, clean.round(6), check_freq=False,
                                   check_names=False, atol=1e-6)
+
+
+# ---------------- unresolved points ----------------
+
+def test_rejected_gap_is_reported_as_unresolved(scenario):
+    """Regression test. A rejected repair left 20 days silently carried
+    forward with no audit trail. Carry forward has zero volatility, so
+    that is the worst possible value to have in the data unannounced."""
+    corrupted, _, _, _, _, _, _, unresolved = scenario
+    gap = corrupted.index[corrupted["credit_spread"].isna()]
+    reported = unresolved[unresolved["series"] == "credit_spread"]["date"]
+    assert set(gap) == set(reported)
+    assert reported.size == 20
+
+def test_no_faulty_point_is_both_repaired_and_unresolved(scenario):
+    _, _, _, _, _, flags, _, unresolved = scenario
+    applied = set(zip(flags["series"], flags["date"]))
+    listed = set(zip(unresolved["series"], unresolved["date"]))
+    assert not (applied & listed)
+
+def test_every_unresolved_row_says_why(scenario):
+    *_, unresolved = scenario
+    assert unresolved["reason"].str.len().gt(10).all()
+    assert unresolved["value_in_use"].notna().all()
+
+
+# ---------------- ml benchmark ----------------
+
+def test_random_forest_is_benchmarked_where_peers_exist(clean):
+    out = evaluation.mask_and_recover(clean, "usd5y")
+    assert "ml_random_forest" in out.index
+
+def test_random_forest_preserves_the_tail_better_than_interpolation(clean):
+    """The finding: ranking by average accuracy ships interpolation,
+    ranking by tail preservation ships the forest. For risk data the
+    second criterion is the one that matters."""
+    for col in ("usd5y", "usd10y", "swaption_vol"):
+        out = evaluation.mask_and_recover(clean, col)
+        assert out.loc["ml_random_forest", "tail_ratio"] > \
+            out.loc["interpolate", "tail_ratio"]
+
+def test_no_method_fully_preserves_the_tail(clean):
+    """Honesty check: every fill flattens volatility somewhat, which is
+    why filled points stay flagged."""
+    out = evaluation.mask_and_recover(clean, "usd5y")
+    assert (out["tail_ratio"] < 1.0).all()
+
+def test_masked_blocks_are_filled_one_outage_at_a_time(clean):
+    """Regression test. The harness used to hand every hidden day to a
+    method at once, so an anchored method drifted across years and scored
+    a mistake the pipeline would never make (tail ratio near 10)."""
+    out = evaluation.mask_and_recover(clean, "usd5y")
+    assert out["tail_ratio"].max() < 2.0
+    assert out["mae"].max() < 0.5

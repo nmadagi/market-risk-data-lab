@@ -49,6 +49,35 @@ with neither is a level break and is held for a human, because
 interpolating a real repricing destroys real history. In the demo, the
 2022 stress onset and the vendor splice seam are both held, not repaired.
 
+## Which fill method to trust, and the metric that decides
+
+A mask-and-recover harness hides observed points, rebuilds each outage the
+way the pipeline would, and scores four methods against the truth: carry
+forward, linear interpolation, an OLS regression on correlated peers, and
+a random forest on the same peer inputs. The forest gets identical
+features and identical anchoring, so the benchmark isolates the functional
+form rather than flattering the fancier model.
+
+The result is worth reading twice. Rank by average error and you ship
+interpolation. Rank by tail preservation, which is what risk data actually
+needs, and the random forest wins on every series that has peers to learn
+from, and it is the only method whose repaired region comes close to
+passing the distribution test. The metric you choose decides the model you
+deploy. No method reaches a tail ratio of 1: every fill flattens
+volatility to some degree, which is exactly why filled points stay flagged
+and never quietly drive stress calibration.
+
+## What the pipeline refuses to fix
+
+A repair that fails its guardrail is not applied. Those points are carried
+forward so the risk engine can run, but carry forward is the method with a
+tail ratio of zero, so it is a stopgap and not a fix. Every such point is
+listed on an exception report with the reason, and the credit spread gap
+sits there permanently in the demo because that factor has no correlated
+peer to rebuild from. A factor with no usable proxy is an escalation, not
+a computation. A pipeline that silently filled these would be worse than
+one that leaves them visible.
+
 ## How repairs are accepted
 
 Each proposal is scored alone, using only data the pipeline would really
@@ -71,7 +100,8 @@ which is exactly the failure that guardrail exists to catch.
 | Historical simulation VaR, sVaR window search, ES, sensitivities, stress scenarios, backtesting | src/risk.py |
 | Mask-and-recover evaluation (MAE, KS, tail preservation) | src/evaluation.py |
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
-| 53 tests, including a headless run of the app through every tab and widget | tests/ |
+| Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
+| 60 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
 

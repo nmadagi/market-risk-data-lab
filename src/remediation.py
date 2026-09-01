@@ -98,16 +98,56 @@ def guardrail_check(base: pd.DataFrame, proposal: dict) -> dict:
 def run(corrupted: pd.DataFrame, findings: pd.DataFrame):
     """Full loop: propose, check each alone, apply only the accepted.
 
-    Returns (staged, flags, proposals, checks). staged starts from the
-    working frame (gaps carried forward) and contains only accepted
-    repairs; flags lists every applied point with its method.
+    Returns (staged, flags, proposals, checks, unresolved).
+
+    staged starts from the working frame. Points with no accepted repair
+    are carried forward so the risk engine can run at all, but that is a
+    stopgap, not a fix: carry forward is the method this project's own
+    evaluation shows flattens volatility. So every such point is listed in
+    `unresolved` and stays on the exception report until a human deals
+    with it. The pipeline never silently fills.
     """
     base = corrupted.ffill()
     proposals = propose(corrupted, findings)
     checks = [guardrail_check(base, p) for p in proposals]
     accepted = [p for p, c in zip(proposals, checks) if c["accepted"]]
     staged, flags = apply_to_staging(base, accepted)
-    return staged, flags, proposals, checks
+    unresolved = _unresolved(corrupted, proposals, checks)
+    return staged, flags, proposals, checks, unresolved
+
+
+def _unresolved(corrupted, proposals, checks):
+    """Every faulty point that did NOT get an accepted repair."""
+    repaired = {(p["series"], d)
+                for p, c in zip(proposals, checks) if c["accepted"]
+                for d in p["dates"]}
+    rejected_reason = {}
+    for p, c in zip(proposals, checks):
+        if c["accepted"]:
+            continue
+        why = ("repair routed to human review on VaR impact"
+               if c["needs_review"] else
+               f"repair rejected by distribution check (ks p={c['ks_pvalue']})")
+        for d in p["dates"]:
+            rejected_reason[(p["series"], d)] = f"{p['type']}: {why}"
+
+    rows = []
+    for col in corrupted.columns:
+        for d in corrupted.index[corrupted[col].isna()]:
+            if (col, d) in repaired:
+                continue
+            rows.append({"date": d, "series": col,
+                         "reason": rejected_reason.get(
+                             (col, d), "missing: no repair proposed"),
+                         "value_in_use": "carried forward (stopgap)"})
+    for (col, d), why in rejected_reason.items():
+        if (col, d) in repaired or pd.isna(corrupted.loc[d, col]):
+            continue
+        rows.append({"date": d, "series": col, "reason": why,
+                     "value_in_use": "original faulty value retained"})
+    cols = ["date", "series", "reason", "value_in_use"]
+    out = pd.DataFrame(rows, columns=cols)
+    return out.sort_values(["series", "date"]).reset_index(drop=True)
 
 
 def apply_to_staging(base: pd.DataFrame, proposals: list):
@@ -148,7 +188,22 @@ def _interpolate(series, dates):
     return s.interpolate(method="linear", limit_direction="both").loc[dates].tolist()
 
 
-def _proxy_fill(df, series, dates):
+def fit_proxy(df, series, exclude=None):
+    """OLS of this series' daily changes on its peers' daily changes."""
+    peers = _peers_of(df, series)
+    if not peers:
+        return None
+    chg = df[[series] + peers].diff()
+    good = chg.drop(index=exclude, errors="ignore").dropna() if exclude is not None \
+        else chg.dropna()
+    if len(good) < 30:
+        return None
+    X = np.column_stack([good[p] for p in peers] + [np.ones(len(good))])
+    beta, *_ = np.linalg.lstsq(X, good[series].to_numpy(), rcond=None)
+    return beta
+
+
+def _proxy_fill(df, series, dates, model=None):
     """Rebuild a stretch from correlated peers, in CHANGE space.
 
     Regressing levels looks fine on a chart and is wrong for risk: the
@@ -159,29 +214,82 @@ def _proxy_fill(df, series, dates):
     bridge spreads any residual mismatch across the gap so the far edge
     lands cleanly on the next real observation instead of jumping again.
     """
-    peers = [p for p in PEERS.get(series, []) if p in df.columns]
+    peers = _peers_of(df, series)
     if not peers:
         return None
     dates = pd.DatetimeIndex(dates)
-    chg = df[[series] + peers].diff()
-    good = chg.drop(index=dates, errors="ignore").dropna()
-    if len(good) < 30:
+    beta = model if model is not None else fit_proxy(df, series, exclude=dates)
+    if beta is None:
         return None
-    X = np.column_stack([good[p] for p in peers] + [np.ones(len(good))])
-    beta, *_ = np.linalg.lstsq(X, good[series].to_numpy(), rcond=None)
-
     if df.loc[dates, peers].isna().any().any():
         return None
-    Xh = np.column_stack([chg.loc[dates, p].fillna(0.0) for p in peers]
-                         + [np.ones(len(dates))])
-    steps = Xh @ beta
+    chg = df[peers].diff().loc[dates].fillna(0.0)
+    Xh = np.column_stack([chg[p] for p in peers] + [np.ones(len(dates))])
+    return _anchor_and_bridge(df[series], dates, Xh @ beta)
 
-    anchor = _last_good_before(df[series], dates[0])
+
+def fit_ml(df, series, exclude=None):
+    """Fit the forest once on everything outside the outages.
+
+    Separated from the fill so a caller repairing several outages fits one
+    model and applies it to each, which is both faster and the right
+    methodology: one model, many outages, not a model per hole.
+    """
+    try:
+        from sklearn.ensemble import RandomForestRegressor
+    except ImportError:
+        return None
+    peers = _peers_of(df, series)
+    if not peers:
+        return None
+    chg = df[[series] + peers].diff()
+    good = chg.drop(index=exclude, errors="ignore").dropna() if exclude is not None \
+        else chg.dropna()
+    if len(good) < 100:
+        return None
+    model = RandomForestRegressor(n_estimators=100, min_samples_leaf=5,
+                                  random_state=0, n_jobs=-1)
+    model.fit(good[peers].to_numpy(), good[series].to_numpy())
+    return model
+
+
+def _ml_fill(df, series, dates, model=None):
+    """Same job as _proxy_fill, with a random forest instead of a line.
+
+    Identical inputs (peer daily changes) and identical anchoring, so the
+    comparison in the evaluation harness is apples to apples and the only
+    thing that varies is the functional form. A tree ensemble can capture
+    a non-linear or regime-dependent relationship that OLS cannot. Whether
+    it is worth the loss of interpretability is a question for the
+    benchmark, not for taste: see evaluation.mask_and_recover.
+    """
+    peers = _peers_of(df, series)
+    if not peers:
+        return None
+    dates = pd.DatetimeIndex(dates)
+    if model is None:
+        model = fit_ml(df, series, exclude=dates)
+    if model is None:
+        return None
+    if df.loc[dates, peers].isna().any().any():
+        return None
+    steps = model.predict(df[peers].diff().loc[dates].fillna(0.0).to_numpy())
+    return _anchor_and_bridge(df[series], dates, steps)
+
+
+def _peers_of(df, series):
+    return [p for p in PEERS.get(series, []) if p in df.columns]
+
+
+def _anchor_and_bridge(s, dates, steps):
+    """Walk predicted changes forward from the last real value, then
+    spread any residual mismatch so the far edge lands on the next real
+    observation instead of jumping."""
+    anchor = _last_good_before(s, dates[0])
     if anchor is None:
         return None
     path = anchor + np.cumsum(steps)
-
-    nxt = _first_good_after(df[series], dates[-1])
+    nxt = _first_good_after(s, dates[-1])
     if nxt is not None:
         err = nxt - path[-1]
         n = len(path)

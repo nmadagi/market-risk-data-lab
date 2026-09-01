@@ -9,13 +9,16 @@ enough for risk data:
                 method smooths, and smoothed history understates VaR and
                 weakens stress calibration. The most important number here.
 Baseline method is interpolation: if the fancy method cannot beat it,
-ship the simple one.
+ship the simple one. That is why a random forest is in the lineup. It
+gets exactly the same inputs as the linear proxy, so the benchmark
+isolates the functional form, and it earns its place only if the numbers
+say so. Measuring beats assuming in both directions.
 """
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.remediation import _proxy_fill
+from src.remediation import _ml_fill, _proxy_fill, fit_ml, fit_proxy
 
 
 def _mask(series: pd.Series, frac: float, seed: int, block: int = 5):
@@ -41,18 +44,61 @@ def _fill_carry(df, col, dates):
     return s.ffill().loc[dates]
 
 
-def _fill_proxy(df, col, dates):
+def _fill_proxy(df, col, dates, model=None):
+    return _fill_with(_proxy_fill, df, col, dates, model)
+
+
+def _fill_ml(df, col, dates, model=None):
+    return _fill_with(_ml_fill, df, col, dates, model)
+
+
+def _fill_with(fn, df, col, dates, model=None):
     masked = df.copy()
     masked.loc[dates, col] = np.nan
-    vals = _proxy_fill(masked, col, dates)
-    if vals is None:
-        return None
-    return pd.Series(vals, index=dates)
+    vals = fn(masked, col, dates, model=model)
+    return None if vals is None else pd.Series(vals, index=dates)
 
 
 METHODS = {"carry_forward": _fill_carry,
            "interpolate": _fill_interpolate,
-           "proxy_regression": _fill_proxy}
+           "proxy_regression": _fill_proxy,
+           "ml_random_forest": _fill_ml}
+
+# methods that learn from history get one fit for all outages, not one per
+# outage: same model applied everywhere, and far faster
+FITTERS = {"proxy_regression": fit_proxy, "ml_random_forest": fit_ml}
+
+
+def _blocks(index: pd.DatetimeIndex, hidden: pd.DatetimeIndex):
+    """Split hidden dates into contiguous runs.
+
+    The pipeline always repairs one continuous outage at a time. Handing a
+    method every hidden day at once instead lets an anchored method drift
+    across years of untouched data, which measures a mistake the pipeline
+    would never make. So the harness reproduces the real call pattern.
+    """
+    pos = {d: i for i, d in enumerate(index)}
+    runs, run = [], []
+    for d in hidden:
+        if run and pos[d] != pos[run[-1]] + 1:
+            runs.append(pd.DatetimeIndex(run))
+            run = []
+        run.append(d)
+    if run:
+        runs.append(pd.DatetimeIndex(run))
+    return runs
+
+
+def _fill_in_blocks(fn, df, col, hidden, model=None):
+    """Apply one method to each contiguous outage separately."""
+    parts = []
+    for block in _blocks(df.index, hidden):
+        est = fn(df, col, block, model=model) if model is not None \
+            else fn(df, col, block)
+        if est is None:
+            return None
+        parts.append(est)
+    return pd.concat(parts)
 
 
 def mask_and_recover(df: pd.DataFrame, col: str, frac: float = 0.08,
@@ -63,7 +109,11 @@ def mask_and_recover(df: pd.DataFrame, col: str, frac: float = 0.08,
     true_ret = df[col].diff().dropna()
     rows = []
     for name, fn in METHODS.items():
-        est = fn(df, col, hidden)
+        fitter = FITTERS.get(name)
+        model = fitter(df, col, exclude=hidden) if fitter else None
+        if fitter is not None and model is None:
+            continue
+        est = _fill_in_blocks(fn, df, col, hidden, model)
         if est is None:
             continue
         repaired = df[col].copy()

@@ -15,7 +15,7 @@ st.set_page_config(page_title="market-risk-data-lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-01-per-proposal-guardrails"
+PIPELINE_VERSION = "2026-09-01-unresolved-and-ml-benchmark"
 
 
 def table(df):
@@ -31,12 +31,14 @@ def load_all(version: str):
     clean = generate_market_data()
     corrupted, fault_log = apply_default_faults(clean)
     findings = detection.run_all(corrupted)
-    staged, flags, proposals, checks = remediation.run(corrupted, findings)
-    return clean, corrupted, fault_log, findings, proposals, staged, flags, checks
+    staged, flags, proposals, checks, unresolved = remediation.run(
+        corrupted, findings)
+    return (clean, corrupted, fault_log, findings, proposals, staged, flags,
+            checks, unresolved)
 
 
-clean, corrupted, fault_log, findings, proposals, staged, flags, checks = load_all(
-    PIPELINE_VERSION)
+(clean, corrupted, fault_log, findings, proposals, staged, flags, checks,
+ unresolved) = load_all(PIPELINE_VERSION)
 
 
 @st.cache_data
@@ -167,6 +169,20 @@ with tabs[2]:
         table(held[["series", "start", "detail", "verdict"]])
     st.write("Applied point flags (audit trail):")
     table(flags)
+
+    st.subheader("What the pipeline refused to fix")
+    st.write(
+        f"{len(unresolved)} points have no accepted repair. They are carried "
+        "forward so the risk engine can run at all, but carrying a value "
+        "forward is the method this project's own evaluation shows has zero "
+        "volatility, so it is a stopgap and not a fix. Nothing here is "
+        "presented as repaired data: these points stay on the exception "
+        "report until a person resolves them, which for the credit spread "
+        "gap means choosing a proxy series, because that factor has no "
+        "correlated peer to rebuild from. A pipeline that silently filled "
+        "these would be worse than one that leaves them visible."
+    )
+    table(unresolved)
     facts = agent.build_facts(findings, checks, var_corrupt, var_repaired)
     text, source = agent.narrative(facts)
     st.info(f"Morning report ({source}): {text}")
@@ -237,15 +253,33 @@ with tabs[5]:
     st.subheader("Mask and recover: proving a fill method deserves trust")
     st.write(
         "Hide observed points, reconstruct them with each method, score "
-        "against truth. MAE is plain accuracy. The KS p-value asks whether "
-        "the repair keeps the return distribution shape. tail_ratio is the "
-        "one that matters most for risk: repaired volatility over true "
-        "volatility. Below 1 means the method smooths, and smoothed history "
-        "understates VaR and weakens stress calibration. Carry forward wins "
-        "no prizes here on purpose: it is the baseline that shows why "
-        "evaluation must happen before trust. Series without correlated "
-        "peers have no proxy row, which is itself a finding: a factor with "
-        "no proxy is a factor whose gaps cannot be rebuilt safely."
+        "against truth. Each outage is rebuilt on its own, exactly the way "
+        "the pipeline would be called. MAE is plain accuracy. The KS "
+        "p-value asks whether the repair keeps the return distribution "
+        "shape. tail_ratio is the one that matters most for risk: repaired "
+        "volatility over true volatility. Below 1 means the method smooths, "
+        "and smoothed history understates VaR and weakens stress "
+        "calibration."
+    )
+    st.write(
+        "**The result worth reading twice.** Rank by MAE and you ship "
+        "interpolation. Rank by tail preservation, which is what risk "
+        "actually needs, and the random forest wins on every series that "
+        "has peers to learn from, and it is the only method whose repaired "
+        "region comes close to passing the distribution test. The metric "
+        "you choose decides the model you deploy, and for risk data average "
+        "accuracy is the wrong metric. Note also that no method reaches a "
+        "tail ratio of 1: every fill flattens volatility to some degree, "
+        "which is the reason filled points stay flagged and never quietly "
+        "drive stress calibration."
+    )
+    st.write(
+        "Carry forward wins no prizes on purpose: it is the baseline, its "
+        "tail ratio is exactly zero, and it is what the pipeline falls back "
+        "to for points it refuses to repair. Series without correlated "
+        "peers show no proxy or forest row at all, which is itself a "
+        "finding: a factor with no proxy is a factor whose gaps cannot be "
+        "rebuilt safely, and that is an escalation, not a computation."
     )
     col = st.selectbox("series to evaluate", list(clean.columns), index=1,
                        key="evalcol")
@@ -265,7 +299,8 @@ with tabs[6]:
     st.write(
         "Pipeline: generate golden copy > inject faults > detect "
         "(run length, EWMA z-score, calendar, peer and reversal tiebreakers) "
-        "> propose fixes (interpolation or change-space peer regression) > "
+        "> propose fixes (interpolation or change-space peer regression, "
+        "with a random forest benchmarked against both) > "
         "per-proposal guardrail checks (KS distribution test, VaR impact "
         "routing) > apply accepted only, with flags > risk engine (hist sim "
         "VaR, sVaR window search, sensitivities, coherent stress scenarios, "

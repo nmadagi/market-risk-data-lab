@@ -73,3 +73,25 @@ what a careful reader would have asked about.
   test asserts the snapshot matches the generator so it cannot drift.
 - Streamlit's cache hashes a function's own source, not its callees; a
   version string passed into cached functions is what invalidates them.
+
+Second QC round, prompted by a fair question: is any of this ML?
+
+- It was not, so I added one. A random forest now competes with the linear
+  proxy on identical peer inputs and identical anchoring, and the harness
+  reports it honestly. It loses on average error and wins on tail
+  preservation, which for risk data is the criterion that matters. That
+  split is the whole argument for benchmarking rather than assuming.
+- Answering the question exposed a worse bug than the missing ML. The
+  20 day credit spread gap had its repair rejected, correctly, and then
+  the points were carried forward into the final data with no flag on
+  them. Carry forward has a tail ratio of exactly zero, so the pipeline
+  was silently shipping the single worst fill it knows about. There is now
+  an explicit unresolved report: any faulty point without an accepted
+  repair is listed with the reason and what value is standing in.
+- The evaluation harness was handing every hidden day to a method at once.
+  Anchored methods then drifted across years of untouched data and scored
+  a tail ratio near 10, a mistake the pipeline would never make because
+  real outages are contiguous. It now rebuilds one outage at a time.
+- The forest was refitting for each of 27 outage blocks, 15 seconds per
+  series. Now it fits once and applies everywhere: 0.9 seconds, same
+  numbers, and it is also the correct methodology.
