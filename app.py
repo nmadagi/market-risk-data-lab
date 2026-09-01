@@ -12,9 +12,14 @@ from src.corruption import apply_default_faults, inject_stale
 
 st.set_page_config(page_title="market-risk-data-lab", layout="wide")
 
+# Streamlit hashes a cached function's OWN source, not the source of what it
+# calls. Changing the generator or the repair logic therefore leaves a stale
+# cached result behind. Bumping this string is what actually invalidates it.
+PIPELINE_VERSION = "2026-09-01-changespace-proxy-fill"
+
 
 @st.cache_data
-def load_all():
+def load_all(version: str):
     clean = generate_market_data()
     corrupted, fault_log = apply_default_faults(clean)
     findings = detection.run_all(corrupted)
@@ -25,11 +30,12 @@ def load_all():
     return clean, corrupted, fault_log, findings, proposals, staged, flags, checks
 
 
-clean, corrupted, fault_log, findings, proposals, staged, flags, checks = load_all()
+clean, corrupted, fault_log, findings, proposals, staged, flags, checks = load_all(
+    PIPELINE_VERSION)
 
 
 @st.cache_data
-def staleness_sweep():
+def staleness_sweep(version: str):
     """How long must every feed stall before 99% VaR actually moves?"""
     base = risk.var99(risk.pnl_vector(clean))
     rows = []
@@ -171,7 +177,7 @@ with tabs[3]:
         "worst five days are still in there. A stalled feed is close to "
         "invisible in this number."
     )
-    st.dataframe(staleness_sweep(), use_container_width=True)
+    st.dataframe(staleness_sweep(PIPELINE_VERSION), use_container_width=True)
 
     bt = risk.backtest(staged)
     n_exc = int(bt["exceedance"].sum())
