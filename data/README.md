@@ -47,4 +47,4 @@ One row per injected fault: type, series, start, end, description.
 
 The toy trading book, held as sensitivities. Rates and spread in dollars
 per basis point, vega in dollars per vol point, FX as a dollar notional.
-Long the 5 year against the 2 year, long vega, long euro, long credit.
+Long the 5 year against the 2 year, long vega, long euro, short credit (gains when spreads widen).

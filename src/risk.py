@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 # the demo book: long duration via 5y, a 2s5s steepener flavor, long vega,
-# long eur, long credit risk (loses when spreads widen)
+# long eur, short credit (owns protection, gains when spreads widen)
 PORTFOLIO = {
     "usd2y": -60_000.0,        # dv01 $/bp (short the 2y)
     "usd5y": 180_000.0,        # dv01 $/bp (long the 5y)
