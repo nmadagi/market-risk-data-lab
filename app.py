@@ -3,6 +3,7 @@ detects it, repairs it under guardrails, and proves the repair.
 
 Read the tabs left to right; they are the pipeline in order.
 """
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -24,6 +25,56 @@ def table(df):
         st.dataframe(df, width="stretch")
     except Exception:
         st.dataframe(df, use_container_width=True)
+
+
+def chart(c):
+    """st.altair_chart at full width across Streamlit versions."""
+    try:
+        st.altair_chart(c, width="stretch")
+    except Exception:
+        st.altair_chart(c, use_container_width=True)
+
+
+CLEAN_COLOR, CORRUPT_COLOR = "#9aa5b1", "#d9480f"
+
+
+def overlay(view: pd.DataFrame, height: int = 300):
+    """Clean as a thick grey band, corrupted as a thin orange line on top.
+
+    Two lines that are identical almost everywhere hide each other, so the
+    clean one is drawn wide and the corrupted one narrow: where they agree
+    you see orange inside grey, where they disagree the grey shows on its
+    own. The y axis does not start at zero, so small faults stay visible.
+    """
+    long = (view.rename_axis("date").reset_index()
+            .melt(id_vars="date", var_name="source", value_name="value"))
+    color = alt.Color("source:N", title=None,
+                      scale=alt.Scale(domain=["clean", "corrupted"],
+                                      range=[CLEAN_COLOR, CORRUPT_COLOR]))
+    base = alt.Chart(long).encode(
+        x=alt.X("date:T", title=None),
+        y=alt.Y("value:Q", title=None, scale=alt.Scale(zero=False)),
+        color=color,
+        tooltip=[alt.Tooltip("date:T"), "source:N",
+                 alt.Tooltip("value:Q", format=".4f")])
+    clean_layer = base.transform_filter(alt.datum.source == "clean") \
+        .mark_line(strokeWidth=5, opacity=0.9)
+    corrupt_layer = base.transform_filter(alt.datum.source == "corrupted") \
+        .mark_line(strokeWidth=1.6)
+    return alt.layer(clean_layer, corrupt_layer).properties(height=height)
+
+
+def difference(clean_s: pd.Series, corrupt_s: pd.Series, height: int = 160):
+    """corrupted minus clean over the whole history. Zero means identical,
+    a break means the value is missing, anything else is a fault."""
+    d = (corrupt_s - clean_s).rename("corrupted minus clean") \
+        .rename_axis("date").reset_index()
+    return alt.Chart(d).mark_line(color=CORRUPT_COLOR, strokeWidth=1.5).encode(
+        x=alt.X("date:T", title=None),
+        y=alt.Y("corrupted minus clean:Q", title=None),
+        tooltip=[alt.Tooltip("date:T"),
+                 alt.Tooltip("corrupted minus clean:Q", format=".4f")]
+    ).properties(height=height)
 
 
 @st.cache_data
@@ -117,8 +168,22 @@ with tabs[0]:
     table(fault_log)
     col = st.selectbox("series", list(clean.columns), index=1)
     view = pd.DataFrame({"clean": clean[col], "corrupted": corrupted[col]})
-    st.line_chart(view.loc["2025-06-01":])
-    st.line_chart(view.loc["2022-06-01":"2023-06-30"], height=200)
+    st.write(
+        "Grey is the clean history drawn thick; orange is the corrupted "
+        "feed drawn thin on top. Where the two agree you see orange inside "
+        "grey. Where grey shows on its own, the feed is wrong there. "
+        "Last fifteen months:"
+    )
+    chart(overlay(view.loc["2025-06-01":]))
+    st.write("Around the vendor switch in January 2023 (the splice):")
+    chart(overlay(view.loc["2022-06-01":"2023-06-30"], height=220))
+    st.write(
+        "Corrupted minus clean over the whole history. Zero means the two "
+        "files agree; a break means the value is missing; anything else is "
+        "a fault. This is the map of everything that was done to this "
+        "series."
+    )
+    chart(difference(clean[col], corrupted[col]))
 
 with tabs[1]:
     st.subheader("Statistical detection, no model needed yet")
