@@ -20,6 +20,12 @@ RATE_PARAMS = {
 STRESS_START, STRESS_END = "2022-02-01", "2022-11-30"
 STRESS_VOL_MULT = 3.0
 
+# swaption vol: mean reverting in log space so it stays in a realistic band
+# (roughly 70 to 165 vol points, spiking only in the stress era). A plain
+# random walk drifts to nonsense over 6 years; implied vol is anchored.
+VOL_MEAN_REV_SPEED = 0.03
+VOL_LOG_DAILY_VOL = 0.015
+
 
 def business_days() -> pd.DatetimeIndex:
     return pd.bdate_range(START, END)
@@ -47,11 +53,12 @@ def generate_market_data(seed: int = SEED) -> pd.DataFrame:
     for name, (s, m, sp, v) in RATE_PARAMS.items():
         df[name] = _ou_path(rng, dates, s, m, sp, v, stress)
 
-    # swaption vol in vol points, lognormal-ish, spikes in the stress era
-    vol_shocks = rng.standard_normal(len(dates)) * 0.015
-    vol_shocks[stress] *= STRESS_VOL_MULT
-    df["swaption_vol"] = 80.0 * np.exp(np.cumsum(vol_shocks - 0.5 * 0.015**2))
-    df["swaption_vol"] = df["swaption_vol"].clip(lower=30.0)
+    # swaption vol in vol points. Mean reverting in log space: implied vol
+    # is anchored, it spikes and decays back, it does not random walk to
+    # nonsense levels over years. Long run level 80, stress era spikes.
+    log_vol = _ou_path(rng, dates, np.log(80.0), np.log(80.0),
+                       VOL_MEAN_REV_SPEED, VOL_LOG_DAILY_VOL, stress)
+    df["swaption_vol"] = np.clip(np.exp(log_vol), 30.0, 200.0)
 
     # eurusd spot, log returns
     fx_shocks = rng.standard_normal(len(dates)) * 0.005
