@@ -8,6 +8,8 @@ app injects realistic data faults into a synthetic six-factor history,
 detects them statistically, repairs them under deterministic guardrails, and
 proves the repairs with a mask-and-recover evaluation harness.
 
+Live: https://market-risk-data-lab.streamlit.app
+
 The design principle throughout: automated proposals, deterministic
 acceptance, flagged and reversible changes. The LLM writes the morning
 report; it never touches data, and a number-check guardrail rejects any
@@ -32,28 +34,51 @@ as the industry shifts from VaR toward expected shortfall, data errors
 get more load bearing, not less.
 
 After detection and repair, expected shortfall returns to within 5% of
-its clean value with every filled point flagged. The stressed VaR window
+its clean value with every applied point flagged. The stressed VaR window
 search independently lands on the engineered 2022 high volatility era at
 roughly 2.9x ordinary VaR.
+
+## How detection decides what a big move is
+
+A big move on its own is not evidence of an error. Every spike gets two
+tiebreakers. Peers: if correlated series moved the same day, it is a
+market event. Reversal: a corrupt print is undone the next day when the
+feed returns to reality; a genuine regime move or a vendor level shift is
+not. Spike plus reversal is a data error and gets a repair proposal. Spike
+with neither is a level break and is held for a human, because
+interpolating a real repricing destroys real history. In the demo, the
+2022 stress onset and the vendor splice seam are both held, not repaired.
+
+## How repairs are accepted
+
+Each proposal is scored alone, using only data the pipeline would really
+have (no clean reference anywhere). A KS test checks that the repaired
+region keeps the series' own return distribution; a VaR impact check
+routes material changes to human review. Only accepted proposals touch
+the staging copy. In the demo, a 20 day linear interpolation of the credit
+spread gap is rejected by the KS test because it flattens volatility,
+which is exactly the failure that guardrail exists to catch.
 
 ## What it covers
 
 | Capability | Where |
 |---|---|
 | Time series construction (golden copy, seeded synthetic) | data/generate.py |
+| The dataset as CSV, with a column dictionary | data/ |
 | Fault injection: stale, spike, gap, vendor splice | src/corruption.py |
-| Anomaly detection: run-length, EWMA z-score, calendar, cross-sectional tiebreaker | src/detection.py |
-| Remediation ladder with staging, flags, KS and VaR-impact guardrails | src/remediation.py |
+| Anomaly detection: run-length, EWMA z-score, calendar, peer and reversal tiebreakers | src/detection.py |
+| Remediation ladder, per-proposal KS and VaR-impact guardrails, accepted-only staging, flags | src/remediation.py |
 | Historical simulation VaR, sVaR window search, ES, sensitivities, stress scenarios, backtesting | src/risk.py |
 | Mask-and-recover evaluation (MAE, KS, tail preservation) | src/evaluation.py |
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
-| 36 pytest cases | tests/ |
+| 53 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
 
     pip install -r requirements.txt
     streamlit run app.py
     python -m pytest tests/
+    python -m data.export
 
 Optional: set ANTHROPIC_API_KEY to enable the LLM morning report; without
 it the deterministic template is used, which is the point of the fallback.

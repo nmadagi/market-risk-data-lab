@@ -1,0 +1,7 @@
+sensitivity,value,unit
+DV01 2y,-60000.0,$ per bp
+DV01 5y,180000.0,$ per bp
+DV01 10y,40000.0,$ per bp
+Vega,95000.0,$ per vol point
+FX delta,25000000.0,$ notional
+Spread DV01,-30000.0,$ per bp

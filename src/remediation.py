@@ -1,32 +1,42 @@
-"""Remediation: propose fixes, check them, never touch the golden copy blindly.
+"""Remediation: propose fixes, check each one, promote only what passes.
 
 The design principle: the proposal engine proposes, deterministic guardrails
-dispose. Fixes land in a staging copy, every repaired point is flagged, and
-promotion requires the guardrail checks to pass. Material VaR impact routes
-to human review instead of auto-accept.
+dispose. Every proposal is scored on its own, against only the data the
+pipeline would really have (no peeking at a clean truth), and only the
+accepted ones are applied to the staging copy. Rejected ones are kept for
+the audit trail. Material VaR impact routes to human review instead of
+auto-accept. Every applied point is flagged, and the golden copy is never
+edited in place.
 
 The fix ladder, ordered by trust:
   1 day        -> drop and interpolate
   short gap    -> linear interpolation between good neighbors
-  long stretch -> proxy regression on correlated peer series
+  long stretch -> regression on correlated peer series, in change space
 """
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.detection import PEERS
+from src.detection import PEERS, VERDICT_ERROR
 from src import risk
 
 SHORT_GAP_MAX = 5
 KS_PVALUE_MIN = 0.05
 VAR_IMPACT_REVIEW_PCT = 5.0
+KS_WINDOW = 30
 
 
 def propose(corrupted: pd.DataFrame, findings: pd.DataFrame) -> list:
-    """One proposal per finding that looks like a data error."""
+    """One proposal per finding that looks like a data error.
+
+    Spikes are proposed only when the verdict is a data error. Real moves
+    and level breaks are left alone: a level break needs a human to decide
+    whether it is a vendor splice or a genuine repricing, and interpolating
+    it away would destroy real history.
+    """
     proposals = []
     for _, f in findings.iterrows():
-        if f.get("verdict") == "likely real move":
+        if f["type"] == "spike" and f.get("verdict") != VERDICT_ERROR:
             continue
         series, kind = f["series"], f["type"]
         dates = _affected_dates(corrupted, f)
@@ -49,48 +59,74 @@ def propose(corrupted: pd.DataFrame, findings: pd.DataFrame) -> list:
     return proposals
 
 
-def apply_to_staging(corrupted: pd.DataFrame, proposals: list):
-    """Apply proposals to a staging copy; return (staged_df, flags_df)."""
-    staged = corrupted.copy()
+def guardrail_check(base: pd.DataFrame, proposal: dict) -> dict:
+    """Deterministic acceptance checks for ONE proposal, applied alone.
+
+    base is the working frame the pipeline actually has (corrupted, with
+    gaps carried forward so the risk engine can run). No clean reference
+    is used anywhere: production never has one.
+
+    ks_pvalue     : returns in a window around the repair vs this series'
+                    own returns everywhere else. Low p means the repair
+                    changed the local distribution shape.
+    var_impact_pct: how much this repair alone moves 99 pct VaR. Material
+                    impact is not a rejection, it is a routing decision:
+                    a human signs off, the pipeline does not.
+    """
+    series, dates = proposal["series"], proposal["dates"]
+    trial = _apply_one(base, proposal)
+
+    lo = max(0, trial.index.get_loc(dates[0]) - KS_WINDOW)
+    hi = min(len(trial) - 1, trial.index.get_loc(dates[-1]) + KS_WINDOW)
+    region_ret = trial[series].iloc[lo:hi + 1].diff().dropna()
+    outside = trial[series].drop(trial.index[lo:hi + 1]).diff().dropna()
+    ks_p = stats.ks_2samp(region_ret, outside).pvalue
+
+    var_before = risk.var99(risk.pnl_vector(base))
+    var_after = risk.var99(risk.pnl_vector(trial))
+    impact = abs(var_after - var_before) / abs(var_before) * 100
+
+    needs_review = impact > VAR_IMPACT_REVIEW_PCT
+    accepted = ks_p >= KS_PVALUE_MIN and not needs_review
+    return {"series": series, "method": proposal["method"],
+            "type": proposal["type"], "points": len(dates),
+            "ks_pvalue": round(float(ks_p), 4),
+            "var_impact_pct": round(float(impact), 2),
+            "needs_review": bool(needs_review), "accepted": bool(accepted)}
+
+
+def run(corrupted: pd.DataFrame, findings: pd.DataFrame):
+    """Full loop: propose, check each alone, apply only the accepted.
+
+    Returns (staged, flags, proposals, checks). staged starts from the
+    working frame (gaps carried forward) and contains only accepted
+    repairs; flags lists every applied point with its method.
+    """
+    base = corrupted.ffill()
+    proposals = propose(corrupted, findings)
+    checks = [guardrail_check(base, p) for p in proposals]
+    accepted = [p for p, c in zip(proposals, checks) if c["accepted"]]
+    staged, flags = apply_to_staging(base, accepted)
+    return staged, flags, proposals, checks
+
+
+def apply_to_staging(base: pd.DataFrame, proposals: list):
+    """Apply proposals to a copy; return (staged_df, flags_df)."""
+    staged = base.copy()
     flags = []
     for p in proposals:
         for d, v in zip(p["dates"], p["values"]):
             staged.loc[d, p["series"]] = v
             flags.append({"date": d, "series": p["series"],
                           "method": p["method"], "filled": True})
-    return staged, pd.DataFrame(flags)
+    cols = ["date", "series", "method", "filled"]
+    return staged, pd.DataFrame(flags, columns=cols)
 
 
-def guardrail_check(clean_ref: pd.DataFrame, staged: pd.DataFrame,
-                    corrupted: pd.DataFrame, proposal: dict) -> dict:
-    """Deterministic acceptance checks for one proposal.
-
-    ks_pvalue     : filled-region returns vs the series' observed returns.
-                    Low p means the repair changed the distribution shape.
-    var_impact_pct: how much the repair moves 99 pct VaR vs the corrupted
-                    input. Material impact is not a rejection, it is a
-                    routing decision: a human signs off, the pipeline does not.
-    """
-    series = proposal["series"]
-    dates = proposal["dates"]
-    lo = max(0, staged.index.get_loc(dates[0]) - 30)
-    hi = min(len(staged) - 1, staged.index.get_loc(dates[-1]) + 30)
-    window = staged[series].iloc[lo:hi + 1]
-    region_ret = window.diff().dropna()
-    obs_ret = clean_ref[series].diff().dropna()
-    ks_p = stats.ks_2samp(region_ret, obs_ret.sample(
-        min(len(obs_ret), 250), random_state=0)).pvalue
-
-    var_before = risk.var99(risk.pnl_vector(corrupted.ffill()))
-    var_after = risk.var99(risk.pnl_vector(staged))
-    impact = abs(var_after - var_before) / abs(var_before) * 100
-
-    needs_review = impact > VAR_IMPACT_REVIEW_PCT
-    accepted = ks_p >= KS_PVALUE_MIN and not needs_review
-    return {"series": series, "method": proposal["method"],
-            "ks_pvalue": round(float(ks_p), 4),
-            "var_impact_pct": round(float(impact), 2),
-            "needs_review": needs_review, "accepted": accepted}
+def _apply_one(base, proposal):
+    out = base.copy()
+    out.loc[proposal["dates"], proposal["series"]] = proposal["values"]
+    return out
 
 
 def _affected_dates(df, finding):
@@ -134,8 +170,7 @@ def _proxy_fill(df, series, dates):
     X = np.column_stack([good[p] for p in peers] + [np.ones(len(good))])
     beta, *_ = np.linalg.lstsq(X, good[series].to_numpy(), rcond=None)
 
-    peer_chg = df.loc[dates, peers]
-    if peer_chg.isna().any().any():
+    if df.loc[dates, peers].isna().any().any():
         return None
     Xh = np.column_stack([chg.loc[dates, p].fillna(0.0) for p in peers]
                          + [np.ones(len(dates))])
@@ -166,5 +201,5 @@ def _first_good_after(s, date):
 
 def _rationale(kind, method, n):
     if method == "interpolate":
-        return f"{kind}: {n} points dropped and linearly interpolated from good neighbors"
+        return f"{kind}: {n} point{'s' if n > 1 else ''} dropped and linearly interpolated from good neighbors"
     return f"{kind}: {n} points rebuilt by regression on correlated peer series"

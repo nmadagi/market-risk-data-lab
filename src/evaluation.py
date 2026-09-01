@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.detection import PEERS
 from src.remediation import _proxy_fill
 
 

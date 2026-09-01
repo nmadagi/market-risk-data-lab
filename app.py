@@ -15,7 +15,15 @@ st.set_page_config(page_title="market-risk-data-lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-01-changespace-proxy-fill"
+PIPELINE_VERSION = "2026-09-01-per-proposal-guardrails"
+
+
+def table(df):
+    """st.dataframe at full width across Streamlit versions."""
+    try:
+        st.dataframe(df, width="stretch")
+    except Exception:
+        st.dataframe(df, use_container_width=True)
 
 
 @st.cache_data
@@ -23,10 +31,7 @@ def load_all(version: str):
     clean = generate_market_data()
     corrupted, fault_log = apply_default_faults(clean)
     findings = detection.run_all(corrupted)
-    proposals = remediation.propose(corrupted, findings)
-    staged, flags = remediation.apply_to_staging(corrupted.ffill(), proposals)
-    checks = [remediation.guardrail_check(clean, staged, corrupted, p)
-              for p in proposals]
+    staged, flags, proposals, checks = remediation.run(corrupted, findings)
     return clean, corrupted, fault_log, findings, proposals, staged, flags, checks
 
 
@@ -49,7 +54,6 @@ def staleness_sweep(version: str):
                      "99% VaR": f"${v/1e6:,.2f}M",
                      "vs clean": f"{(v-base)/base*100:+.1f}%"})
     return pd.DataFrame(rows)
-
 
 
 var_clean = risk.var99(risk.pnl_vector(clean))
@@ -105,44 +109,64 @@ with tabs[0]:
         "The golden copy is clean seeded synthetic history (2020 to 2026, "
         "with an engineered high volatility era in 2022). Four realistic "
         "faults are injected: a stale feed, a spike, a gap, and a vendor "
-        "splice. Pick a series to compare clean vs corrupted."
+        "splice. Pick a series to compare clean vs corrupted. The same data "
+        "is exported as CSV in the repo's data folder."
     )
-    st.dataframe(fault_log, use_container_width=True)
+    table(fault_log)
     col = st.selectbox("series", list(clean.columns), index=1)
     view = pd.DataFrame({"clean": clean[col], "corrupted": corrupted[col]})
     st.line_chart(view.loc["2025-06-01":])
-    st.line_chart(view.loc["2022-06-01":"2023-06-30"],
-                  height=200)
+    st.line_chart(view.loc["2022-06-01":"2023-06-30"], height=200)
 
 with tabs[1]:
     st.subheader("Statistical detection, no model needed yet")
     st.write(
         "Three detectors: run length on zero returns (stale), EWMA z-score "
-        "on daily moves (spike and splice seam), calendar completeness "
-        "(gap). Spikes get the cross sectional tiebreaker: if correlated "
-        "peers moved the same day it is likely a real market event, not an "
-        "error. That check is what keeps a detector from deleting real "
-        "history."
+        "on daily moves (spike), calendar completeness (gap). A big move on "
+        "its own is not evidence of an error, so spikes get two tiebreakers. "
+        "Peers: if correlated series moved the same day it is a market "
+        "event. Reversal: a corrupt print is undone the next day when the "
+        "feed returns to reality; a genuine regime move or a vendor level "
+        "shift is not. Spike plus reversal is a data error and gets a "
+        "repair proposal. Spike with neither is a level break, and it is "
+        "held for a human rather than interpolated away, because "
+        "interpolating a real repricing destroys real history."
     )
-    st.dataframe(findings, use_container_width=True)
+    table(findings)
 
 with tabs[2]:
-    st.subheader("Repairs are proposed, checked, staged, and flagged")
+    st.subheader("Repairs are proposed, checked one at a time, and only the "
+                 "accepted ones are applied")
     st.write(
         "The fix ladder by trust: interpolate short problems, rebuild long "
-        "stretches by regression on correlated peers. Nothing edits the "
-        "golden copy: fixes land in a staging copy, every filled point is "
-        "flagged, and two deterministic guardrails decide acceptance: a KS "
-        "test that the repair preserves the return distribution, and a VaR "
-        "impact check that routes material changes to human review."
+        "stretches by regression on correlated peers in change space. Each "
+        "proposal is scored alone, using only data the pipeline would really "
+        "have. Two deterministic guardrails decide: a KS test that the "
+        "repaired region keeps the series' own return distribution, and a "
+        "VaR impact check that routes material changes to human review. "
+        "Rejected and held proposals are kept for the audit trail but never "
+        "touch the staging copy. The golden copy is never edited in place."
     )
+    n_acc = sum(c["accepted"] for c in checks)
+    n_rev = sum(c["needs_review"] for c in checks)
+    n_rej = len(checks) - n_acc - n_rev
+    held = findings[findings.get("verdict", pd.Series(dtype=str))
+                    == detection.VERDICT_BREAK] if not findings.empty else findings
+    a, b, c_, d_ = st.columns(4)
+    a.metric("accepted", n_acc)
+    b.metric("needs human review", n_rev)
+    c_.metric("rejected by guardrail", n_rej)
+    d_.metric("level breaks held", len(held))
     for p, c in zip(proposals, checks):
         badge = "auto-accepted" if c["accepted"] else (
             "needs human review" if c["needs_review"] else "rejected")
         with st.expander(f"{p['series']}: {p['rationale']}  [{badge}]"):
             st.json(c)
-    st.write("Filled point flags (audit trail):")
-    st.dataframe(flags, use_container_width=True)
+    if len(held):
+        st.write("Held for human review (no automatic repair):")
+        table(held[["series", "start", "detail", "verdict"]])
+    st.write("Applied point flags (audit trail):")
+    table(flags)
     facts = agent.build_facts(findings, checks, var_corrupt, var_repaired)
     text, source = agent.narrative(facts)
     st.info(f"Morning report ({source}): {text}")
@@ -169,6 +193,7 @@ with tabs[3]:
     )
     st.write("Simulated P&L distribution (repaired data, last 500 days):")
     st.bar_chart(pnl.round(-4).value_counts().sort_index(), height=220)
+
     st.write("How broken does the data have to be before VaR reacts?")
     st.write(
         "Every one of the six series is frozen for a stretch, and the "
@@ -177,14 +202,15 @@ with tabs[3]:
         "worst five days are still in there. A stalled feed is close to "
         "invisible in this number."
     )
-    st.dataframe(staleness_sweep(PIPELINE_VERSION), use_container_width=True)
+    table(staleness_sweep(PIPELINE_VERSION))
 
     bt = risk.backtest(staged)
     n_exc = int(bt["exceedance"].sum())
     st.write(
-        f"Backtest, last 250 days: {n_exc} exceedances vs about 2.5 "
-        "expected at 99 pct. Too many means the model understates risk; "
-        "clustered exceedances are worse than the count alone."
+        f"Backtest, last 250 days: {n_exc} days where the loss was bigger "
+        "than the prior day's VaR, against about 2.5 expected at 99 pct. "
+        "Too many means the model understates risk; clustered misses are "
+        "worse than the count alone."
     )
     st.line_chart(bt[["pnl", "var"]], height=240)
 
@@ -197,14 +223,15 @@ with tabs[4]:
         "decomposing by factor shows whether positions changed, markets "
         "changed, or one series' history changed."
     )
-    st.dataframe(risk.sensitivities_table(), use_container_width=True)
+    table(risk.sensitivities_table())
     st.subheader("Stress scenarios: designed, coherent, no probabilities")
     st.write(
         "Each scenario moves several factors at once, the way real events "
         "do. Severity plus simultaneity; a scenario that shocks rates but "
-        "leaves vol untouched is fiction."
+        "leaves vol untouched is fiction. Not every scenario is a loss: the "
+        "point of running several is finding which direction hurts."
     )
-    st.dataframe(risk.stress_pnl(), use_container_width=True)
+    table(risk.stress_pnl())
 
 with tabs[5]:
     st.subheader("Mask and recover: proving a fill method deserves trust")
@@ -216,12 +243,13 @@ with tabs[5]:
         "volatility. Below 1 means the method smooths, and smoothed history "
         "understates VaR and weakens stress calibration. Carry forward wins "
         "no prizes here on purpose: it is the baseline that shows why "
-        "evaluation must happen before trust."
+        "evaluation must happen before trust. Series without correlated "
+        "peers have no proxy row, which is itself a finding: a factor with "
+        "no proxy is a factor whose gaps cannot be rebuilt safely."
     )
     col = st.selectbox("series to evaluate", list(clean.columns), index=1,
                        key="evalcol")
-    st.dataframe(evaluation.mask_and_recover(clean, col),
-                 use_container_width=True)
+    table(evaluation.mask_and_recover(clean, col))
 
 with tabs[6]:
     st.subheader("What this is")
@@ -236,10 +264,10 @@ with tabs[6]:
     )
     st.write(
         "Pipeline: generate golden copy > inject faults > detect "
-        "(run length, EWMA z-score, calendar, cross sectional tiebreaker) > "
-        "propose fixes (interpolation or peer regression) > guardrail "
-        "checks (KS distribution test, VaR impact routing) > staged apply "
-        "with flags > risk engine (hist sim VaR, sVaR window search, "
-        "sensitivities, coherent stress scenarios, backtesting) > mask and "
-        "recover evaluation harness."
+        "(run length, EWMA z-score, calendar, peer and reversal tiebreakers) "
+        "> propose fixes (interpolation or change-space peer regression) > "
+        "per-proposal guardrail checks (KS distribution test, VaR impact "
+        "routing) > apply accepted only, with flags > risk engine (hist sim "
+        "VaR, sVaR window search, sensitivities, coherent stress scenarios, "
+        "backtesting) > mask and recover evaluation harness."
     )

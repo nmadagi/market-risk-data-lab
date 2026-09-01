@@ -44,3 +44,32 @@ a failing test, which is why each now has a test.
   honest result is that VaR barely moves at all, for a structural reason,
   and that is now the app's actual thesis. Kept as a lesson: verify the
   demonstration reproduces after any change to the data generator.
+
+QC round before showing it to anyone. Ran the real app headless through
+every tab and widget, read every table the way a viewer would, and fixed
+what a careful reader would have asked about.
+
+- Spike detector flagged 28 sigma moves in the first week of 2020. That
+  is the EWMA vol estimate with no history, not a finding. Added a warmup.
+- The 2022 stress onset and the splice seam were labeled data errors and
+  interpolated away. Added the reversal test: a corrupt print is undone
+  next day, a regime move or level shift is not. Those are now held as
+  level breaks for a human. Interpolating real history is worse than
+  leaving a fault in.
+- Every proposal showed the same VaR impact because the guardrail measured
+  the whole staged frame. Now each proposal is scored alone.
+- Rejected proposals were applied to staging anyway. Now only accepted
+  ones are, and the audit trail keeps the rest.
+- The KS guardrail compared against the clean truth, which production
+  never has. Now it compares the repaired region to the series' own
+  returns everywhere else.
+- A visible consequence of the honest guardrail: the 20 day linear fill of
+  the credit spread gap is rejected because it flattens volatility. Kept,
+  because that is the guardrail doing its job on screen.
+- Added tests/test_app.py: Streamlit's AppTest runs the actual script and
+  drives every selectbox option. Unit tests cannot catch a tab that only
+  throws when rendered.
+- Exported the dataset to data/ as CSV with a column dictionary, and a
+  test asserts the snapshot matches the generator so it cannot drift.
+- Streamlit's cache hashes a function's own source, not its callees; a
+  version string passed into cached functions is what invalidates them.

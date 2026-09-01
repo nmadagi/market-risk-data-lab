@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -17,16 +16,14 @@ def clean():
 def scenario(clean):
     corrupted, fault_log = apply_default_faults(clean)
     findings = detection.run_all(corrupted)
-    proposals = remediation.propose(corrupted, findings)
-    staged, flags = remediation.apply_to_staging(corrupted.ffill(), proposals)
-    return corrupted, fault_log, findings, proposals, staged, flags
+    staged, flags, proposals, checks = remediation.run(corrupted, findings)
+    return corrupted, fault_log, findings, proposals, staged, flags, checks
 
 
 # ---------------- data generation ----------------
 
 def test_generation_is_deterministic(clean):
-    again = generate_market_data()
-    pd.testing.assert_frame_equal(clean, again)
+    pd.testing.assert_frame_equal(clean, generate_market_data())
 
 def test_no_missing_values_in_golden_copy(clean):
     assert not clean.isna().any().any()
@@ -34,6 +31,9 @@ def test_no_missing_values_in_golden_copy(clean):
 def test_six_factors_present(clean):
     assert list(clean.columns) == ["usd2y", "usd5y", "usd10y",
                                    "swaption_vol", "eurusd", "credit_spread"]
+
+def test_business_days_only(clean):
+    assert (clean.index.dayofweek < 5).all()
 
 def test_stress_era_is_more_volatile(clean):
     stress = clean.loc["2022-02-01":"2022-11-30", "usd5y"].diff().std()
@@ -46,7 +46,6 @@ def test_levels_are_sane(clean):
     rates = clean[["usd2y", "usd5y", "usd10y"]]
     assert ((rates > -1.0) & (rates < 12.0)).all().all()
 
-
 def test_implied_vol_stays_in_a_realistic_band(clean):
     """Regression test. A plain random walk drifted vol past 1000 points
     over six years, which is not a number any market has produced. Implied
@@ -54,7 +53,6 @@ def test_implied_vol_stays_in_a_realistic_band(clean):
     v = clean["swaption_vol"]
     assert v.between(40, 180).all()
     assert v.max() < 200  # never pinned against the clip
-
 
 def test_stress_era_shows_up_in_vol(clean):
     stress_max = clean.loc["2022-02-01":"2022-11-30", "swaption_vol"].max()
@@ -78,7 +76,7 @@ def test_stale_freezes_value(clean):
     assert frozen.nunique() == 1
 
 def test_gap_creates_nans(clean):
-    out, log = inject_gap(clean, "credit_spread", "2026-05-04", 20)
+    out, _ = inject_gap(clean, "credit_spread", "2026-05-04", 20)
     assert out["credit_spread"].isna().sum() == 20
 
 def test_splice_shifts_pre_seam_only(clean):
@@ -88,18 +86,20 @@ def test_splice_shifts_pre_seam_only(clean):
     assert out["swaption_vol"].iloc[-1] == pytest.approx(
         clean["swaption_vol"].iloc[-1])
 
+def test_fault_log_has_four_distinct_faults(scenario):
+    _, fault_log, *_ = scenario
+    assert sorted(fault_log["fault"]) == ["gap", "spike", "splice", "stale"]
+
 
 # ---------------- detection ----------------
 
-def test_all_four_faults_detected(scenario):
+def test_stale_gap_and_spike_all_detected(scenario):
     _, _, findings, *_ = scenario
-    kinds = set(findings["type"])
-    assert {"stale", "spike", "gap"} <= kinds  # splice surfaces as a spike at the seam
+    assert {"stale", "spike", "gap"} <= set(findings["type"])
 
 def test_stale_found_on_right_series(scenario):
     _, _, findings, *_ = scenario
-    stale = findings[findings["type"] == "stale"]
-    assert "usd5y" in set(stale["series"])
+    assert "usd5y" in set(findings[findings["type"] == "stale"]["series"])
 
 def test_gap_found_with_right_length(scenario):
     _, _, findings, *_ = scenario
@@ -110,48 +110,95 @@ def test_gap_found_with_right_length(scenario):
 def test_clean_data_yields_no_stale_or_gap(clean):
     findings = detection.run_all(clean)
     if not findings.empty:
-        assert not (findings["type"].isin(["stale", "gap"])).any()
+        assert not findings["type"].isin(["stale", "gap"]).any()
 
-def test_peer_check_flags_lone_move(clean):
+def test_no_spikes_flagged_during_warmup(clean):
+    """Regression test. With no history the EWMA vol estimate is noise and
+    the first days of 2020 were flagged as 28 sigma spikes."""
+    findings = detection.run_all(clean)
+    spikes = findings[findings["type"] == "spike"] if not findings.empty else findings
+    cutoff = clean.index[detection.SPIKE_WARMUP]
+    assert (spikes["start"] >= cutoff).all() if len(spikes) else True
+
+def test_injected_spike_reverses_and_is_called_an_error(clean):
     out, _ = inject_spike(clean, "usd5y", "2026-07-15", n_sigma=10)
     findings = detection.run_all(out)
-    spike = findings[(findings["type"] == "spike") &
-                     (findings["series"] == "usd5y")]
-    assert (spike["verdict"] == "likely data error").any()
+    row = findings[(findings["type"] == "spike") &
+                   (findings["series"] == "usd5y") &
+                   (findings["start"] == pd.Timestamp("2026-07-15"))].iloc[0]
+    assert row["reverses"] and row["verdict"] == detection.VERDICT_ERROR
+
+def test_splice_seam_is_a_level_break_not_an_error(scenario):
+    """A vendor level shift does not revert next day, so it must be held
+    for a human, not interpolated away."""
+    _, _, findings, *_ = scenario
+    seam = findings[(findings["series"] == "swaption_vol") &
+                    (findings["start"] == pd.Timestamp("2023-01-17"))]
+    assert len(seam) == 1
+    assert seam.iloc[0]["verdict"] == detection.VERDICT_BREAK
+
+def test_peer_confirmed_move_is_called_real(clean):
+    out = clean.copy()
+    for col in ("usd2y", "usd5y", "usd10y"):
+        out, _ = inject_spike(out, col, "2026-07-15", n_sigma=8)
+    findings = detection.run_all(out)
+    row = findings[(findings["series"] == "usd5y") &
+                   (findings["start"] == pd.Timestamp("2026-07-15"))].iloc[0]
+    assert row["verdict"] == detection.VERDICT_REAL
 
 
 # ---------------- remediation ----------------
 
-def test_every_error_gets_a_proposal(scenario):
+def test_level_breaks_get_no_proposal(scenario):
     _, _, findings, proposals, *_ = scenario
-    errors = findings[findings.get("verdict", "x") != "likely real move"]
-    assert len(proposals) >= min(3, len(errors))
+    held = findings[findings["verdict"] == detection.VERDICT_BREAK]
+    proposed = {(p["series"], p["dates"][0]) for p in proposals}
+    for _, h in held.iterrows():
+        assert (h["series"], h["start"]) not in proposed
 
-def test_staging_leaves_no_nans_on_repaired_series(scenario):
-    *_, staged, flags = scenario
-    for s in flags["series"].unique():
-        assert not staged[s].isna().any()
+def test_stale_and_injected_spike_get_proposals(scenario):
+    _, _, _, proposals, *_ = scenario
+    kinds = {(p["series"], p["type"]) for p in proposals}
+    assert ("usd5y", "stale") in kinds and ("usd5y", "spike") in kinds
 
-def test_every_filled_point_is_flagged(scenario):
-    _, _, _, proposals, _, flags = scenario
-    n_expected = sum(len(p["dates"]) for p in proposals)
-    assert len(flags) == n_expected
-    assert flags["filled"].all()
+def test_only_accepted_proposals_are_applied(scenario):
+    """Regression test. Rejected repairs used to land in staging anyway."""
+    corrupted, _, _, proposals, staged, flags, checks = scenario
+    base = corrupted.ffill()
+    for p, c in zip(proposals, checks):
+        touched = (staged.loc[p["dates"], p["series"]]
+                   != base.loc[p["dates"], p["series"]]).any()
+        assert touched == c["accepted"]
+    n_expected = sum(len(p["dates"]) for p, c in zip(proposals, checks)
+                     if c["accepted"])
+    assert len(flags) == n_expected and flags["filled"].all()
 
-def test_guardrail_reports_required_fields(clean, scenario):
-    corrupted, _, _, proposals, staged, _ = scenario
-    c = remediation.guardrail_check(clean, staged, corrupted, proposals[0])
-    assert {"ks_pvalue", "var_impact_pct", "accepted", "needs_review"} <= set(c)
+def test_guardrail_scores_each_proposal_alone(scenario):
+    """Regression test. Every proposal used to show the same VaR impact
+    because the check measured the whole staged frame."""
+    _, _, _, _, _, _, checks = scenario
+    impacts = {c["var_impact_pct"] for c in checks}
+    assert len(impacts) > 1
+
+def test_guardrail_never_sees_clean_data(scenario):
+    corrupted, _, _, proposals, *_ = scenario
+    c = remediation.guardrail_check(corrupted.ffill(), proposals[0])
+    assert {"ks_pvalue", "var_impact_pct", "accepted", "needs_review",
+            "points", "type"} <= set(c)
+
+def test_staging_has_no_nans(scenario):
+    *_, staged, _, _ = scenario
+    assert not staged.isna().any().any()
 
 def test_repair_moves_es_toward_clean(clean, scenario):
     """Expected shortfall is the metric that actually responds; see
     test_one_bad_point_moves_es_far_more_than_var for why."""
-    corrupted, _, _, _, staged, _ = scenario
+    corrupted, _, _, _, staged, _, _ = scenario
     e_clean = risk.expected_shortfall(risk.pnl_vector(clean))
     e_corrupt = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
     e_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
     assert abs(e_repaired - e_clean) < abs(e_corrupt - e_clean)
-
+    assert abs(e_repaired - e_clean) / e_clean < 0.10
 
 def test_proxy_fill_does_not_inject_a_jump(clean):
     """Regression test. Fitting levels made the repair start away from the
@@ -160,11 +207,17 @@ def test_proxy_fill_does_not_inject_a_jump(clean):
     the same range as real ones."""
     corrupted, _ = inject_stale(clean, "usd5y", "2026-06-01", 15)
     findings = detection.run_all(corrupted)
-    proposals = remediation.propose(corrupted, findings)
-    staged, _ = remediation.apply_to_staging(corrupted.ffill(), proposals)
+    staged, *_ = remediation.run(corrupted, findings)
     biggest_real = clean["usd5y"].diff().abs().max()
-    biggest_repaired = staged["usd5y"].diff().abs().max()
-    assert biggest_repaired <= biggest_real * 1.5
+    assert staged["usd5y"].diff().abs().max() <= biggest_real * 1.5
+
+def test_proxy_fill_lands_on_next_real_observation(clean):
+    corrupted, _ = inject_stale(clean, "usd5y", "2026-06-01", 15)
+    findings = detection.run_all(corrupted)
+    staged, *_ = remediation.run(corrupted, findings)
+    after = clean.loc["2026-06-22":].index[0]
+    step_into_real = abs(staged.loc[after, "usd5y"] - staged["usd5y"].shift(1)[after])
+    assert step_into_real < clean["usd5y"].diff().abs().quantile(0.99)
 
 
 # ---------------- risk engine ----------------
@@ -179,7 +232,7 @@ def test_es_exceeds_var(clean):
 def test_svar_exceeds_var_and_finds_stress_era(clean):
     v = risk.var99(risk.pnl_vector(clean))
     sv, ws, we = risk.svar99(clean)
-    assert sv > v
+    assert sv > 2 * v
     assert ws.year <= 2022 <= we.year
 
 def test_single_stale_factor_barely_moves_var(clean):
@@ -190,7 +243,6 @@ def test_single_stale_factor_barely_moves_var(clean):
     v_clean = risk.var99(risk.pnl_vector(clean))
     v_stale = risk.var99(risk.pnl_vector(out))
     assert abs(v_stale - v_clean) / v_clean < 0.02
-
 
 def test_one_bad_point_moves_es_far_more_than_var(clean):
     """One corrupt print becomes the single worst day. A percentile shifts
@@ -207,13 +259,21 @@ def test_one_bad_point_moves_es_far_more_than_var(clean):
     assert es_move > var_move * 10
 
 def test_rate_moves_are_in_bp(clean):
-    m = risk.factor_moves(clean)
-    assert m["usd5y"].abs().mean() > 0.5  # bp scale, not decimal
+    assert risk.factor_moves(clean)["usd5y"].abs().mean() > 0.5
 
-def test_stress_scenarios_all_priced(clean):
+def test_pnl_signs_match_positions():
+    """Long duration loses when rates rise; long vega gains when vol rises."""
+    idx = pd.bdate_range("2026-01-01", periods=3)
+    df = pd.DataFrame({"usd2y": 3.0, "usd5y": [3.0, 3.1, 3.1], "usd10y": 3.0,
+                       "swaption_vol": [80.0, 80.0, 85.0], "eurusd": 1.1,
+                       "credit_spread": 120.0}, index=idx)
+    pnl = risk.pnl_vector(df, lookback=2)
+    assert pnl.iloc[0] < 0           # 5y up 10bp: long duration loses
+    assert pnl.iloc[1] > 0           # vol up 5 points: long vega gains
+
+def test_stress_scenarios_all_priced():
     table = risk.stress_pnl()
-    assert len(table) == 3
-    assert table["pnl_musd"].notna().all()
+    assert len(table) == 3 and table["pnl_musd"].notna().all()
 
 def test_backtest_exceedance_rate_reasonable(clean):
     bt = risk.backtest(clean)
@@ -225,6 +285,11 @@ def test_backtest_exceedance_rate_reasonable(clean):
 def test_mask_and_recover_scores_all_methods(clean):
     out = evaluation.mask_and_recover(clean, "usd5y")
     assert {"carry_forward", "interpolate", "proxy_regression"} <= set(out.index)
+
+def test_series_without_peers_has_no_proxy_row(clean):
+    out = evaluation.mask_and_recover(clean, "eurusd")
+    assert "proxy_regression" not in out.index
+    assert {"carry_forward", "interpolate"} <= set(out.index)
 
 def test_carry_forward_smooths_the_tail(clean):
     out = evaluation.mask_and_recover(clean, "usd5y")
@@ -256,5 +321,23 @@ def test_narrative_falls_back_without_key(monkeypatch):
              "var_corrupt_m": 3.0, "var_repaired_m": 3.5,
              "series_touched": ["usd5y"]}
     text, source = agent.narrative(facts)
-    assert "template" in source
-    assert agent.numbers_check(text, facts)
+    assert "template" in source and agent.numbers_check(text, facts)
+
+def test_build_facts_matches_scenario(scenario):
+    _, _, findings, _, _, _, checks = scenario
+    facts = agent.build_facts(findings, checks, 2_620_000, 2_580_000)
+    assert facts["n_findings"] == len(findings)
+    assert facts["n_accepted"] == sum(c["accepted"] for c in checks)
+
+
+# ---------------- data snapshot ----------------
+
+def test_csv_snapshot_matches_generator(clean):
+    """The CSVs in data/ are a snapshot of the generator. If someone edits
+    the generator and forgets to re-export, this fails."""
+    from data import export
+    if not export.FILES["clean"].exists():
+        pytest.skip("run python -m data.export first")
+    on_disk = export.load_clean()
+    pd.testing.assert_frame_equal(on_disk, clean.round(6), check_freq=False,
+                                  check_names=False, atol=1e-6)
