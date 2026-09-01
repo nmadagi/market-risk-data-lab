@@ -24,3 +24,23 @@ Decisions made while building, in order.
   names first (usd5y contains a digit). Both were real bugs found by tests.
 - No database, no API needed to run. Streamlit cache holds the one scenario;
   deterministic seed means every viewer sees the same story.
+
+Three bugs worth recording, all found by inspecting output rather than by
+a failing test, which is why each now has a test.
+
+- Implied vol was a plain random walk and drifted to 1000+ vol points over
+  six years. No market has ever produced that. Implied vol is anchored, so
+  the generator now mean reverts in log space around 80. Caught by actually
+  reading the generated table instead of trusting the chart shape.
+- The proxy fill regressed LEVELS. The fitted level did not meet the last
+  real observation, so the repair injected a fake 44bp move on its first
+  day, which the risk engine read as an 8.3M loss: the repair was creating
+  a worse artifact than the fault. Now it regresses CHANGES, anchors to the
+  last good value, and linear-bridges the residual so the far edge lands on
+  the next real observation. Risk models consume returns, so a repair has
+  to be right in return space, not just look right on a chart.
+- The original headline claim (stale feed understates VaR ~4%) did not
+  survive the vol fix: it had been an artifact of vol dominating P&L. The
+  honest result is that VaR barely moves at all, for a structural reason,
+  and that is now the app's actual thesis. Kept as a lesson: verify the
+  demonstration reproduces after any change to the data generator.

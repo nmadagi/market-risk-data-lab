@@ -8,7 +8,7 @@ import streamlit as st
 
 from data.generate import generate_market_data
 from src import agent, detection, evaluation, remediation, risk
-from src.corruption import apply_default_faults
+from src.corruption import apply_default_faults, inject_stale
 
 st.set_page_config(page_title="market-risk-data-lab", layout="wide")
 
@@ -27,9 +27,31 @@ def load_all():
 
 clean, corrupted, fault_log, findings, proposals, staged, flags, checks = load_all()
 
+
+@st.cache_data
+def staleness_sweep():
+    """How long must every feed stall before 99% VaR actually moves?"""
+    base = risk.var99(risk.pnl_vector(clean))
+    rows = []
+    for days in (20, 60, 100, 200, 300):
+        c = clean.copy()
+        for col in clean.columns:
+            c, _ = inject_stale(c, col, "2025-06-02", days)
+        v = risk.var99(risk.pnl_vector(c.ffill()))
+        rows.append({"days stalled": days,
+                     "share of 500 day window": f"{days/5:.0f}%",
+                     "99% VaR": f"${v/1e6:,.2f}M",
+                     "vs clean": f"{(v-base)/base*100:+.1f}%"})
+    return pd.DataFrame(rows)
+
+
+
 var_clean = risk.var99(risk.pnl_vector(clean))
 var_corrupt = risk.var99(risk.pnl_vector(corrupted.ffill()))
 var_repaired = risk.var99(risk.pnl_vector(staged))
+es_clean = risk.expected_shortfall(risk.pnl_vector(clean))
+es_corrupt = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
+es_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
 
 st.title("market-risk-data-lab")
 st.caption(
@@ -39,12 +61,33 @@ st.caption(
     "in order."
 )
 
-c1, c2, c3 = st.columns(3)
-c1.metric("99% VaR, clean data", f"${var_clean/1e6:,.2f}M")
-c2.metric("99% VaR, corrupted data", f"${var_corrupt/1e6:,.2f}M",
-          f"{(var_corrupt-var_clean)/var_clean*100:+.1f}% vs clean")
-c3.metric("99% VaR, after repair", f"${var_repaired/1e6:,.2f}M",
-          f"{(var_repaired-var_clean)/var_clean*100:+.1f}% vs clean")
+st.subheader("The finding: your risk number is not a data alarm")
+c1, c2 = st.columns(2)
+c1.metric("99% VaR with corrupted data", f"${var_corrupt/1e6:,.2f}M",
+          f"{(var_corrupt-var_clean)/var_clean*100:+.1f}% vs clean, barely moves")
+c2.metric("Expected shortfall, same corrupted data",
+          f"${es_corrupt/1e6:,.2f}M",
+          f"{(es_corrupt-es_clean)/es_clean*100:+.1f}% vs clean")
+st.write(
+    f"Same book, same four data faults, two risk measures. VaR reads "
+    f"\\${var_corrupt/1e6:,.2f}M against a true \\${var_clean/1e6:,.2f}M and "
+    f"looks perfectly normal. Expected shortfall reads "
+    f"\\${es_corrupt/1e6:,.2f}M against a true \\${es_clean/1e6:,.2f}M. "
+    "The reason is structural: 99% VaR "
+    "is the 5th worst of 500 days, so one corrupt print moves the ranking by "
+    "a single place and the number shrugs. Expected shortfall averages the "
+    "worst days, so it absorbs the whole fake loss. Two consequences. You "
+    "cannot use the headline risk number to tell you your data broke, which "
+    "is the argument for dedicated monitoring. And as the industry shifts "
+    "from VaR toward expected shortfall, data quality gets more load bearing, "
+    "not less."
+)
+st.write(
+    f"After detection and repair: VaR \\${var_repaired/1e6:,.2f}M "
+    f"({(var_repaired-var_clean)/var_clean*100:+.1f}% vs clean), expected "
+    f"shortfall \\${es_repaired/1e6:,.2f}M "
+    f"({(es_repaired-es_clean)/es_clean*100:+.1f}% vs clean)."
+)
 
 tabs = st.tabs(["1 Data health", "2 Detection", "3 Remediation",
                 "4 VaR and sVaR", "5 Sensitivities and stress",
@@ -105,7 +148,8 @@ with tabs[3]:
     svar, ws, we = risk.svar99(staged)
     a, b, d = st.columns(3)
     a.metric("99% 1d VaR", f"${var_repaired/1e6:,.2f}M")
-    b.metric("Expected shortfall", f"${es/1e6:,.2f}M")
+    b.metric("Expected shortfall", f"${es/1e6:,.2f}M",
+             "the average of the days worse than VaR")
     d.metric("Stressed VaR", f"${svar/1e6:,.2f}M",
              f"window {ws.date()} to {we.date()}")
     st.write(
@@ -119,6 +163,16 @@ with tabs[3]:
     )
     st.write("Simulated P&L distribution (repaired data, last 500 days):")
     st.bar_chart(pnl.round(-4).value_counts().sort_index(), height=220)
+    st.write("How broken does the data have to be before VaR reacts?")
+    st.write(
+        "Every one of the six series is frozen for a stretch, and the "
+        "stretch gets longer. VaR does not meaningfully move until the "
+        "outage covers most of the lookback window, because until then the "
+        "worst five days are still in there. A stalled feed is close to "
+        "invisible in this number."
+    )
+    st.dataframe(staleness_sweep(), use_container_width=True)
+
     bt = risk.backtest(staged)
     n_exc = int(bt["exceedance"].sum())
     st.write(

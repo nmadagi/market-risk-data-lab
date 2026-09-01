@@ -44,11 +44,17 @@ def _log(kind, col, start, end, detail):
 
 
 def apply_default_faults(df):
-    """The demo scenario: four faults on three different series."""
+    """The demo scenario: four faults on four different series.
+
+    The spike lands on usd5y deliberately. That is the book's largest
+    sensitivity, so a corrupt print there produces a P&L outlier big
+    enough to matter, which is what exposes the difference between how
+    VaR and expected shortfall react to it.
+    """
     faults = []
     out, f = inject_stale(df, "usd5y", "2026-06-01", 15)
     faults.append(f)
-    out, f = inject_spike(out, "eurusd", "2026-07-15")
+    out, f = inject_spike(out, "usd5y", "2026-07-15")
     faults.append(f)
     out, f = inject_gap(out, "credit_spread", "2026-05-04", 20)
     faults.append(f)

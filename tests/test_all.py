@@ -43,7 +43,23 @@ def test_stress_era_is_more_volatile(clean):
 def test_levels_are_sane(clean):
     assert clean["eurusd"].between(0.5, 2.0).all()
     assert clean["credit_spread"].ge(45).all()
-    assert clean["swaption_vol"].ge(30).all()
+    rates = clean[["usd2y", "usd5y", "usd10y"]]
+    assert ((rates > -1.0) & (rates < 12.0)).all().all()
+
+
+def test_implied_vol_stays_in_a_realistic_band(clean):
+    """Regression test. A plain random walk drifted vol past 1000 points
+    over six years, which is not a number any market has produced. Implied
+    vol mean reverts, so the generator does too."""
+    v = clean["swaption_vol"]
+    assert v.between(40, 180).all()
+    assert v.max() < 200  # never pinned against the clip
+
+
+def test_stress_era_shows_up_in_vol(clean):
+    stress_max = clean.loc["2022-02-01":"2022-11-30", "swaption_vol"].max()
+    calm_max = clean.loc["2024", "swaption_vol"].max()
+    assert stress_max > calm_max * 1.3
 
 
 # ---------------- corruption ----------------
@@ -127,12 +143,28 @@ def test_guardrail_reports_required_fields(clean, scenario):
     c = remediation.guardrail_check(clean, staged, corrupted, proposals[0])
     assert {"ks_pvalue", "var_impact_pct", "accepted", "needs_review"} <= set(c)
 
-def test_repair_moves_var_toward_clean(clean, scenario):
+def test_repair_moves_es_toward_clean(clean, scenario):
+    """Expected shortfall is the metric that actually responds; see
+    test_one_bad_point_moves_es_far_more_than_var for why."""
     corrupted, _, _, _, staged, _ = scenario
-    v_clean = risk.var99(risk.pnl_vector(clean))
-    v_corrupt = risk.var99(risk.pnl_vector(corrupted.ffill()))
-    v_repaired = risk.var99(risk.pnl_vector(staged))
-    assert abs(v_repaired - v_clean) < abs(v_corrupt - v_clean)
+    e_clean = risk.expected_shortfall(risk.pnl_vector(clean))
+    e_corrupt = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
+    e_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
+    assert abs(e_repaired - e_clean) < abs(e_corrupt - e_clean)
+
+
+def test_proxy_fill_does_not_inject_a_jump(clean):
+    """Regression test. Fitting levels made the repair start away from the
+    last real value, injecting a fake ~44bp move that read as an 8M loss.
+    Fitting changes and anchoring to the real data keeps repaired moves in
+    the same range as real ones."""
+    corrupted, _ = inject_stale(clean, "usd5y", "2026-06-01", 15)
+    findings = detection.run_all(corrupted)
+    proposals = remediation.propose(corrupted, findings)
+    staged, _ = remediation.apply_to_staging(corrupted.ffill(), proposals)
+    biggest_real = clean["usd5y"].diff().abs().max()
+    biggest_repaired = staged["usd5y"].diff().abs().max()
+    assert biggest_repaired <= biggest_real * 1.5
 
 
 # ---------------- risk engine ----------------
@@ -150,9 +182,29 @@ def test_svar_exceeds_var_and_finds_stress_era(clean):
     assert sv > v
     assert ws.year <= 2022 <= we.year
 
-def test_stale_data_understates_var(clean):
+def test_single_stale_factor_barely_moves_var(clean):
+    """The uncomfortable finding this app exists to show: 99% VaR is the
+    5th worst of 500 days, so losing 15 mid-range days to a stalled feed
+    moves it almost not at all. The risk number is not a data alarm."""
     out, _ = inject_stale(clean, "usd5y", "2026-06-01", 15)
-    assert risk.var99(risk.pnl_vector(out)) < risk.var99(risk.pnl_vector(clean))
+    v_clean = risk.var99(risk.pnl_vector(clean))
+    v_stale = risk.var99(risk.pnl_vector(out))
+    assert abs(v_stale - v_clean) / v_clean < 0.02
+
+
+def test_one_bad_point_moves_es_far_more_than_var(clean):
+    """One corrupt print becomes the single worst day. A percentile shifts
+    by one rank and shrugs; an average over the tail absorbs the whole
+    fake loss. This is why the VaR to expected shortfall shift under FRTB
+    raises the stakes on data quality rather than lowering them."""
+    out, _ = inject_spike(clean, "usd5y", "2026-07-15", n_sigma=8)
+    p_clean, p_bad = risk.pnl_vector(clean), risk.pnl_vector(out)
+    var_move = abs(risk.var99(p_bad) - risk.var99(p_clean)) / risk.var99(p_clean)
+    es_move = abs(risk.expected_shortfall(p_bad) -
+                  risk.expected_shortfall(p_clean)) / risk.expected_shortfall(p_clean)
+    assert var_move < 0.02
+    assert es_move > 0.25
+    assert es_move > var_move * 10
 
 def test_rate_moves_are_in_bp(clean):
     m = risk.factor_moves(clean)

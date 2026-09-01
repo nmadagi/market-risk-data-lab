@@ -113,15 +113,55 @@ def _interpolate(series, dates):
 
 
 def _proxy_fill(df, series, dates):
-    """Regress the target on correlated peers over clean history, predict the hole."""
+    """Rebuild a stretch from correlated peers, in CHANGE space.
+
+    Regressing levels looks fine on a chart and is wrong for risk: the
+    fitted level does not meet the last real observation, so the repair
+    injects an artificial jump on its first day, and a jump is exactly
+    what a risk model reads as a loss. So: regress daily changes on peer
+    daily changes, then walk forward from the last good value. A linear
+    bridge spreads any residual mismatch across the gap so the far edge
+    lands cleanly on the next real observation instead of jumping again.
+    """
     peers = [p for p in PEERS.get(series, []) if p in df.columns]
     if not peers:
         return None
-    good = df.drop(index=dates).dropna(subset=[series] + peers)
+    dates = pd.DatetimeIndex(dates)
+    chg = df[[series] + peers].diff()
+    good = chg.drop(index=dates, errors="ignore").dropna()
+    if len(good) < 30:
+        return None
     X = np.column_stack([good[p] for p in peers] + [np.ones(len(good))])
     beta, *_ = np.linalg.lstsq(X, good[series].to_numpy(), rcond=None)
-    Xh = np.column_stack([df.loc[dates, p] for p in peers] + [np.ones(len(dates))])
-    return (Xh @ beta).tolist()
+
+    peer_chg = df.loc[dates, peers]
+    if peer_chg.isna().any().any():
+        return None
+    Xh = np.column_stack([chg.loc[dates, p].fillna(0.0) for p in peers]
+                         + [np.ones(len(dates))])
+    steps = Xh @ beta
+
+    anchor = _last_good_before(df[series], dates[0])
+    if anchor is None:
+        return None
+    path = anchor + np.cumsum(steps)
+
+    nxt = _first_good_after(df[series], dates[-1])
+    if nxt is not None:
+        err = nxt - path[-1]
+        n = len(path)
+        path = path + err * (np.arange(1, n + 1) / (n + 1))
+    return path.tolist()
+
+
+def _last_good_before(s, date):
+    prior = s.loc[:date].iloc[:-1].dropna()
+    return float(prior.iloc[-1]) if len(prior) else None
+
+
+def _first_good_after(s, date):
+    later = s.loc[date:].iloc[1:].dropna()
+    return float(later.iloc[0]) if len(later) else None
 
 
 def _rationale(kind, method, n):
