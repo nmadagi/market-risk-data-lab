@@ -203,8 +203,9 @@ with tabs[1]:
         f"{int(repairable.loc[repairable['type'] == 'stale', 'length'].sum())} days, "
         f"the bad print, the gap on every one of its "
         f"{int(repairable.loc[repairable['type'] == 'gap', 'length'].sum())} days). "
-        f"**{len(held)} possible level shifts** flagged for a human to look "
-        "at, none of them planted. Zero real market moves were repaired away."
+        f"**{len(held)} possible level shift{'s' if len(held) != 1 else ''}** "
+        f"flagged for a human to look at, {'none of them' if len(held) != 1 else 'not'} "
+        "planted. Zero real market moves were repaired away."
     )
     st.write(
         "How it works: the fault injector can manufacture unlimited labeled "
@@ -226,7 +227,7 @@ with tabs[1]:
     st.write("Faults found:")
     table(show[["series", "type", "start", "length", "detail", "decision"]]
           .rename(columns={"length": "days"}))
-    with st.expander(f"{len(held)} possible level shifts held for human review"):
+    with st.expander(f"{len(held)} possible level shift{'s' if len(held) != 1 else ''} held for human review"):
         h = held.reset_index(drop=True).copy(); h["start"] = h["start"].dt.date
         table(h[["series", "start", "detail"]])
 
