@@ -176,9 +176,7 @@ def _affected_dates(df, finding):
         return s[s.isna()].index
     start = finding["start"]
     length = int(finding["length"])
-    if kind == "stale":
-        # the frozen prints after the first (real) one
-        return df.loc[start:].index[1:length + 1]
+    # stale: `start` is the first frozen print and `length` counts them
     return df.loc[start:].index[:length]
 
 

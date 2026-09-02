@@ -88,9 +88,9 @@ def test_splice_shifts_pre_seam_only(clean):
     assert out["swaption_vol"].iloc[-1] == pytest.approx(
         clean["swaption_vol"].iloc[-1])
 
-def test_fault_log_has_four_distinct_faults(scenario):
+def test_fault_log_has_three_distinct_faults(scenario):
     _, fault_log, *_ = scenario
-    assert sorted(fault_log["fault"]) == ["gap", "spike", "splice", "stale"]
+    assert sorted(fault_log["fault"]) == ["gap", "spike", "stale"]
 
 
 # ---------------- detection ----------------
@@ -130,14 +130,16 @@ def test_injected_spike_reverses_and_is_called_an_error(clean):
                    (findings["start"] == pd.Timestamp("2026-07-15"))].iloc[0]
     assert row["reverses"] and row["verdict"] == detection.VERDICT_ERROR
 
-def test_splice_seam_is_a_level_break_not_an_error(scenario):
-    """A vendor level shift does not revert next day, so it must be held
-    for a human, not interpolated away."""
-    _, _, findings, *_ = scenario
+def test_splice_seam_is_a_level_break_not_an_error(clean):
+    """A vendor level shift does not revert next day, so the rules hold it
+    for a human rather than interpolating it away."""
+    out, _ = inject_splice(clean, "swaption_vol", "2023-01-16", 12.0)
+    findings = detection.run_all(out)
     seam = findings[(findings["series"] == "swaption_vol") &
                     (findings["start"] == pd.Timestamp("2023-01-17"))]
     assert len(seam) == 1
     assert seam.iloc[0]["verdict"] == detection.VERDICT_BREAK
+
 
 def test_peer_confirmed_move_is_called_real(clean):
     out = clean.copy()
@@ -410,7 +412,7 @@ def forest(scenario):
 def test_rules_find_every_planted_fault(forest):
     _, fault_log, findings, flags = forest
     card = ml_detection.scorecard(fault_log, findings, flags)
-    assert len(card) == 4 and card["rules found it"].all()
+    assert len(card) == 3 and card["rules found it"].all()
 
 def test_forest_finds_some_but_not_all_at_default_budget(forest):
     """The honest result: at a sensible alert budget the forest catches
@@ -420,7 +422,7 @@ def test_forest_finds_some_but_not_all_at_default_budget(forest):
     _, fault_log, findings, flags = forest
     card = ml_detection.scorecard(fault_log, findings, flags)
     found = int(card["isolation forest found it"].sum())
-    assert 1 <= found < 4
+    assert 1 <= found < 3
 
 def test_forest_false_alarms_cluster_in_the_stress_era(forest):
     _, fault_log, _, flags = forest
@@ -432,7 +434,7 @@ def test_bigger_budget_finds_more_faults_at_more_false_alarms(forest):
     corrupted, fault_log, findings, _ = forest
     sweep = ml_detection.budget_sweep(corrupted, fault_log, findings)
     found = sweep["planted faults found"].str.split(" of ").str[0].astype(int)
-    assert found.is_monotonic_increasing and found.iloc[-1] == 4
+    assert found.is_monotonic_increasing and found.iloc[-1] == 3
     assert sweep["false alarms"].is_monotonic_increasing
 
 def test_features_are_scale_free_and_complete(scenario):
@@ -457,20 +459,24 @@ def test_training_worlds_are_labeled_and_never_include_the_demo_seed():
     lf = ml_detection.labeled_features(ml_detection.TRAIN_SEEDS[0])
     assert set(lf["label"].unique()) == set(ml_detection.CLASSES)
 
-def test_classifier_finds_and_names_stale_spike_and_gap(classifier):
-    """Held-out world. The three faults with a distinctive per-day
-    signature are found and named; the splice is not, see next test."""
+def test_classifier_finds_and_names_every_planted_fault(classifier):
+    """Held-out world: every planted fault found and named on every day."""
     fault_log, flagged = classifier
     card = ml_detection.classifier_scorecard(fault_log, flagged).set_index("planted fault")
-    for f in ("stale", "spike", "gap"):
-        assert card.loc[f, "model found it"] and card.loc[f, "model named it correctly"], f
+    assert card["model found it"].all() and card["model named it correctly"].all()
+    assert card.loc["stale", "days flagged in window"] == 14
+    assert card.loc["gap", "days flagged in window"] == 20
 
-def test_splice_is_the_fault_no_per_series_model_resolves(classifier):
+def test_splice_is_the_fault_no_per_series_model_resolves(clean):
     """A permanent level shift looks like a real repricing from inside the
-    numbers. Honest boundary: it needs a vendor notice, not a model."""
-    fault_log, flagged = classifier
-    card = ml_detection.classifier_scorecard(fault_log, flagged).set_index("planted fault")
-    assert not card.loc["splice", "model named it correctly"]
+    numbers. Honest boundary: it needs a vendor notice, not a model. That
+    is why the splice is not in the demo and why predicted level shifts
+    are held for a human instead of repaired."""
+    out, log = inject_splice(clean, "swaption_vol", "2023-01-16", 12.0)
+    model = ml_detection.train_classifier()
+    flagged = ml_detection.classify(out, model)
+    card = ml_detection.classifier_scorecard(pd.DataFrame([log]), flagged)
+    assert not card.iloc[0]["model named it correctly"]
 
 def test_classifier_false_alarms_are_few(classifier):
     fault_log, flagged = classifier
@@ -487,3 +493,51 @@ def test_classifier_beats_forest_on_the_planted_faults(scenario, classifier):
     assert m_found > f_found
     assert len(ml_detection.false_positives(fault_log, flagged)) < \
         len(ml_detection.false_positives(fault_log, forest))
+
+
+# ---------------- the model-first pipeline the app runs ----------------
+
+@pytest.fixture(scope="module")
+def model_pipeline(scenario, classifier):
+    corrupted, fault_log, *_ = scenario
+    _, flagged = classifier
+    findings = ml_detection.findings_from_model(flagged)
+    staged, flags, proposals, checks, unresolved = remediation.run(corrupted, findings)
+    return corrupted, fault_log, findings, staged, flags, proposals, checks, unresolved
+
+def test_model_findings_are_events_not_days(model_pipeline):
+    _, _, findings, *_ = model_pipeline
+    ev = findings.set_index("type")
+    assert int(ev.loc["stale", "length"]) == 14
+    assert int(ev.loc["gap", "length"]) == 20
+    spikes = findings[findings["type"] == "spike"]
+    assert (spikes["verdict"] == detection.VERDICT_ERROR).sum() == 1
+
+def test_possible_level_shifts_are_held_not_repaired(model_pipeline):
+    _, _, findings, _, flags, proposals, *_ = model_pipeline
+    held = findings[findings["verdict"] == detection.VERDICT_BREAK]
+    assert len(held) >= 1
+    proposed = {(p["series"], p["dates"][0]) for p in proposals}
+    for h in held.itertuples():
+        assert (h.series, h.start) not in proposed
+
+def test_model_pipeline_decisions(model_pipeline):
+    *_, flags, proposals, checks, unresolved = model_pipeline
+    assert len(proposals) == 3
+    assert sum(c["accepted"] for c in checks) == 2
+    assert len(flags) == 15 and len(unresolved) == 20
+
+def test_stale_repair_covers_exactly_the_frozen_days(model_pipeline):
+    """Regression test for a one-day offset: the repair used to start one
+    day late and touch one real day after the run."""
+    _, _, _, _, flags, *_ = model_pipeline
+    stale = flags[flags["method"] == "proxy_regression"]["date"]
+    assert stale.min() == pd.Timestamp("2026-06-02")
+    assert stale.max() == pd.Timestamp("2026-06-19")
+
+def test_model_pipeline_restores_expected_shortfall(clean, model_pipeline):
+    corrupted, _, _, staged, *_ = model_pipeline
+    e_clean = risk.expected_shortfall(risk.pnl_vector(clean))
+    e_bad = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
+    e_fix = risk.expected_shortfall(risk.pnl_vector(staged))
+    assert abs(e_fix - e_clean) / e_clean < 0.10 < abs(e_bad - e_clean) / e_clean

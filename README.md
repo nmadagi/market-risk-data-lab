@@ -5,8 +5,9 @@ apps: the data underneath the models. Trading book risk numbers (VaR,
 stressed VaR, sensitivities, stress tests) all consume the same risk factor
 time series, and when one series goes bad the numbers go quietly wrong. This
 app injects realistic data faults into a synthetic six-factor history,
-detects them statistically, repairs them under deterministic guardrails, and
-proves the repairs with a mask-and-recover evaluation harness.
+detects them with a model trained on synthetic faults, repairs them under
+deterministic guardrails, and proves the repairs with a mask-and-recover
+evaluation harness.
 
 Live: https://market-risk-data-lab.streamlit.app
 
@@ -20,7 +21,7 @@ draft containing a figure not present in the computed facts.
 I built this expecting to show that bad data visibly distorts VaR. It
 mostly does not, and that turned out to be the more useful result.
 
-With all four faults injected, 99% VaR moves +0.1% and looks completely
+With all three faults injected, 99% VaR moves +0.1% and looks completely
 normal. Expected shortfall on the same data moves +56%. The reason is
 structural: 99% VaR over a 500 day window is the 5th worst day, so one
 corrupt print shifts the ranking by a single place and the number
@@ -49,38 +50,31 @@ with neither is a level break and is held for a human, because
 interpolating a real repricing destroys real history. In the demo, the
 2022 stress onset and the vendor splice seam are both held, not repaired.
 
-## A model that learned the faults: the injector is the teacher
+## The detector: a model that learned the faults, because the injector is the teacher
 
 An unsupervised model can only rank days as unusual. But the fault
 injector can manufacture unlimited labeled faults, so a gradient boosting
-classifier is trained on twelve synthetic histories full of planted stale
-runs, spikes, gaps and splices, then tested on the demo history, which it
-never saw. It finds and correctly names the stale run (all 14 days), the
-spike, and the gap (all 20 days), with 8 false alarms in six years, every
-one a possible level shift called on a three to four sigma move. Trained
-in under two seconds, scores a world in a few hundredths of a second.
+classifier is trained on twelve synthetic histories full of planted frozen
+feeds, bad prints, gaps and vendor level shifts, then run on the demo
+history, which it never saw. It finds and correctly names all three
+planted faults on every affected day (14 frozen days, the bad print, 20
+missing days), trains in about two seconds and scores six years in a few
+hundredths of a second. It also flags 8 possible level shifts across six
+years for a human to look at; none were planted, and none are repaired
+automatically, because from inside one series a permanent shift looks
+exactly like a real repricing. In production that call belongs to an
+agent that reads the vendor's notice, which is why a vendor splice is not
+in the demo.
 
-The one fault it cannot resolve is the vendor splice, and no per-series
-model can: a permanent level shift looks exactly like a real repricing
-from inside the numbers. The rules hold it as a level break for a human.
-In production that is where an agent reading vendor change notices earns
-its place: the answer is in a document, not in the series.
+## Rules and an Isolation Forest as a cross-check
 
-## Why the unsupervised forest is only a second opinion
-
-Detection is three plain statistical rules plus two tiebreakers. An
-Isolation Forest runs alongside them on five scale-free features per
-series-day and is scored against the rules on the four planted faults.
-At a realistic alert budget of about 30 flags the rules find 4 of 4 and
-the forest finds 2 of 4, with about half its false alarms in the 2022
-stress era. Given a budget of about 200 flags it finds everything, at the
-cost of roughly 170 false alarms. And which two it catches at the small
-budget changed when the fit changed from one joint model to one per
-series, while the rules found all four both ways. That is the honest
-shape of unsupervised anomaly detection on market data: it cannot tell a
-regime change from a data error, its answer depends on fitting choices a
-rule does not have, and the rules encode what a person already knows. The
-forest earns its weight on that scorecard, not by assumption.
+Plain statistical rules (run of identical prints, empty cell, move far
+outside normal, with peer and next-day-reversal tiebreakers) also find all
+three. An Isolation Forest, the same tool used without labels on real FX
+exposure data, finds fewer at a sensible alert budget and puts its false
+alarms in the 2022 stress era, because nothing ever told it the
+difference between a crisis and a broken feed. The three sit in one table
+on the detection tab.
 
 ## Which fill method to trust, and the metric that decides
 
@@ -127,7 +121,7 @@ which is exactly the failure that guardrail exists to catch.
 |---|---|
 | Time series construction (golden copy, seeded synthetic) | data/generate.py |
 | The dataset as CSV, with a column dictionary | data/ |
-| Fault injection: stale, spike, gap, vendor splice | src/corruption.py |
+| Fault injection: stale, spike, gap (vendor splice used in training worlds) | src/corruption.py |
 | Anomaly detection: run-length, EWMA z-score, calendar, peer and reversal tiebreakers | src/detection.py |
 | Remediation ladder, per-proposal KS and VaR-impact guardrails, accepted-only staging, flags | src/remediation.py |
 | Historical simulation VaR, sVaR window search, ES, sensitivities, stress scenarios, backtesting | src/risk.py |
@@ -136,7 +130,7 @@ which is exactly the failure that guardrail exists to catch.
 | Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
 | Supervised fault classifier trained on synthetic worlds, tested on a held-out world | src/ml_detection.py |
 | Isolation Forest anomaly detection scored against the rules | src/ml_detection.py |
-| 70 tests, including a headless run of the app through every tab and widget | tests/ |
+| 75 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
 

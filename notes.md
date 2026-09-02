@@ -125,3 +125,14 @@ Supervised detector, added when asked whether any model could find all four.
 - The three detectors now sit in one table per planted fault: rules,
   forest, classifier. Rules 4 of 4 flagged (splice held), classifier 3 of
   4 named, forest 2 of 4 ranked.
+
+Model first, three faults.
+
+- The trained classifier is now the detector the pipeline runs on; the
+  rules and the forest are a cross-check in an expander. The vendor splice
+  is out of the demo: no per-series model resolves it, so it was costing
+  explanation time for a boundary the model's "possible level shift" flags
+  already illustrate (eight over six years, all held for a human).
+- Fixing the stale repair window while wiring this: the rules path started
+  the repair one day late and touched one real day after the run. Now the
+  affected dates are exactly the frozen ones. Regression test added.

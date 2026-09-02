@@ -2,4 +2,3 @@ fault,series,start,end,detail
 stale,usd5y,2026-06-01,2026-06-19,value frozen for 15 days
 spike,usd5y,2026-07-15,2026-07-15,8 sigma jump on one print
 gap,credit_spread,2026-05-04,2026-05-29,20 missing days
-splice,swaption_vol,2020-01-02,2023-01-16,pre-seam level shifted +12.00

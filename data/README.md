@@ -29,7 +29,7 @@ stress era.
 
 ## market_data_corrupted.csv
 
-The same history with four realistic data faults injected. This is what
+The same history with three realistic data faults injected. This is what
 the pipeline receives.
 
 | fault | series | where | what it looks like |
@@ -37,7 +37,6 @@ the pipeline receives.
 | stale | usd5y | 2026-06-01, 15 days | the value freezes at the last good print |
 | spike | usd5y | 2026-07-15 | one print 8 sigma away, back to normal next day |
 | gap | credit_spread | 2026-05-04, 20 days | missing values |
-| splice | swaption_vol | all history before 2023-01-16 | pre-seam level shifted up 12 vol points |
 
 ## fault_log.csv
 

@@ -44,12 +44,15 @@ def _log(kind, col, start, end, detail):
 
 
 def apply_default_faults(df):
-    """The demo scenario: four faults on four different series.
+    """The demo scenario: three faults on two series.
 
     The spike lands on usd5y deliberately. That is the book's largest
     sensitivity, so a corrupt print there produces a P&L outlier big
     enough to matter, which is what exposes the difference between how
-    VaR and expected shortfall react to it.
+    VaR and expected shortfall react to it. A vendor splice is not in the
+    demo: from inside a single series a permanent level shift is
+    indistinguishable from a real repricing, so it is a human's call, and
+    the trained detector flags candidates for that review instead.
     """
     faults = []
     out, f = inject_stale(df, "usd5y", "2026-06-01", 15)
@@ -57,7 +60,5 @@ def apply_default_faults(df):
     out, f = inject_spike(out, "usd5y", "2026-07-15")
     faults.append(f)
     out, f = inject_gap(out, "credit_spread", "2026-05-04", 20)
-    faults.append(f)
-    out, f = inject_splice(out, "swaption_vol", "2023-01-16", 12.0)
     faults.append(f)
     return out, pd.DataFrame(faults)

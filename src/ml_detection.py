@@ -233,3 +233,47 @@ def classifier_scorecard(fault_log: pd.DataFrame, flagged: pd.DataFrame) -> pd.D
                      "model named it correctly": bool((hits["predicted"] == f.fault).any()),
                      "days flagged in window": len(hits)})
     return pd.DataFrame(rows)
+
+
+def findings_from_model(flagged: pd.DataFrame) -> pd.DataFrame:
+    """Turn per-day predictions into events in the findings schema the
+    remediation step consumes: one row per run of consecutive flagged days
+    on one series with one predicted class.
+
+    stale, gap and spike become repair candidates. A predicted splice is a
+    possible level shift: it is held for a human, never repaired, because a
+    permanent shift cannot be told from a real repricing inside the series.
+    """
+    from src.detection import VERDICT_BREAK, VERDICT_ERROR
+    cols = ["type", "series", "start", "length", "detail", "verdict"]
+    if flagged is None or flagged.empty:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for (series, kind), g in flagged.sort_values("date").groupby(["series", "predicted"]):
+        dates = list(g["date"])
+        runs, run = [], [dates[0]]
+        for prev, cur in zip(dates, dates[1:]):
+            if (cur - prev).days <= 4:      # consecutive business days
+                run.append(cur)
+            else:
+                runs.append(run); run = [cur]
+        runs.append(run)
+        for run in runs:
+            conf = g[g["date"].isin(run)]["confidence"].mean()
+            if kind == "splice":
+                rows.append({"type": "spike", "series": series, "start": run[0],
+                             "length": len(run),
+                             "detail": f"possible level shift, confidence {conf:.2f}",
+                             "verdict": VERDICT_BREAK})
+            elif kind == "spike":
+                rows.append({"type": "spike", "series": series, "start": run[0],
+                             "length": len(run),
+                             "detail": f"bad print, confidence {conf:.2f}",
+                             "verdict": VERDICT_ERROR})
+            else:
+                rows.append({"type": kind, "series": series, "start": run[0],
+                             "length": len(run),
+                             "detail": f"{len(run)} {'frozen' if kind == 'stale' else 'missing'} days, confidence {conf:.2f}",
+                             "verdict": None})
+    out = pd.DataFrame(rows, columns=cols)
+    return out.sort_values("start").reset_index(drop=True)

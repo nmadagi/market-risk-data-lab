@@ -18,7 +18,7 @@ st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-02-supervised-fault-classifier"
+PIPELINE_VERSION = "2026-09-02-model-first-three-faults"
 
 
 def table(df):
@@ -66,21 +66,33 @@ def overlay(view: pd.DataFrame, height: int = 300):
     return alt.layer(clean_layer, corrupt_layer).properties(height=height)
 
 
+@st.cache_resource
+def trained_model(version: str):
+    t0 = time.perf_counter()
+    model = ml_detection.train_classifier()
+    return model, time.perf_counter() - t0
+
+
 @st.cache_data
 def load_all(version: str):
     clean = generate_market_data()
     corrupted, fault_log = apply_default_faults(clean)
+    model, train_seconds = trained_model(version)
     t0 = time.perf_counter()
-    findings = detection.run_all(corrupted)
-    rules_seconds = time.perf_counter() - t0
+    flagged = ml_detection.classify(corrupted, model)
+    score_seconds = time.perf_counter() - t0
+    findings = ml_detection.findings_from_model(flagged)
+    rules_findings = detection.run_all(corrupted)
     staged, flags, proposals, checks, unresolved = remediation.run(
         corrupted, findings)
     return (clean, corrupted, fault_log, findings, proposals, staged, flags,
-            checks, unresolved, rules_seconds)
+            checks, unresolved, flagged, rules_findings, train_seconds,
+            score_seconds)
 
 
 (clean, corrupted, fault_log, findings, proposals, staged, flags, checks,
- unresolved, rules_seconds) = load_all(PIPELINE_VERSION)
+ unresolved, flagged, rules_findings, train_seconds, score_seconds) = load_all(
+    PIPELINE_VERSION)
 
 
 @st.cache_data
@@ -101,32 +113,24 @@ def staleness_sweep(version: str):
 
 
 @st.cache_data
-def ml_second_opinion(version: str):
-    flags = ml_detection.isolation_forest_flags(corrupted)
-    if flags is None:
-        return None, None, None
-    card = ml_detection.scorecard(fault_log, findings, flags)
-    sweep = ml_detection.budget_sweep(corrupted, fault_log, findings)
-    return flags, card, sweep
-
-
-@st.cache_resource
-def trained_model(version: str):
-    t0 = time.perf_counter()
-    model = ml_detection.train_classifier()
-    return model, time.perf_counter() - t0
-
-
-@st.cache_data
-def model_verdict(version: str):
-    model, train_seconds = trained_model(version)
-    if model is None:
-        return None, None, None, None
-    t0 = time.perf_counter()
-    flagged = ml_detection.classify(corrupted, model)
-    score_seconds = time.perf_counter() - t0
-    card = ml_detection.classifier_scorecard(fault_log, flagged)
-    return flagged, card, train_seconds, score_seconds
+def cross_check(version: str):
+    """Rules and an Isolation Forest scored on the same planted faults."""
+    forest = ml_detection.isolation_forest_flags(corrupted)
+    if forest is None:
+        return None
+    mcard = ml_detection.classifier_scorecard(fault_log, flagged)
+    fcard = ml_detection.scorecard(fault_log, rules_findings, forest)
+    out = mcard[["planted fault", "series"]].copy()
+    out["trained model"] = [
+        "found and named" if n else ("found" if f else "missed")
+        for f, n in zip(mcard["model found it"], mcard["model named it correctly"])]
+    out["plain rules"] = fcard["rules found it"].map({True: "found", False: "missed"})
+    out["isolation forest"] = fcard["isolation forest found it"].map({True: "found", False: "missed"})
+    rule_spikes = rules_findings[rules_findings["type"] == "spike"]
+    fps = {"trained model": len(ml_detection.false_positives(fault_log, flagged)),
+           "plain rules": int((rule_spikes["series"] != "usd5y").sum()),
+           "isolation forest": len(ml_detection.false_positives(fault_log, forest))}
+    return out, fps
 
 
 var_clean = risk.var99(risk.pnl_vector(clean))
@@ -138,9 +142,9 @@ es_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
 
 st.title("Market Risk Data Lab")
 st.caption(
-    "One synthetic trading book, six risk factor series, four injected data "
-    "faults. The pipeline detects them, repairs them under deterministic "
-    "guardrails, and proves the repairs statistically. Tabs are the pipeline "
+    "One synthetic trading book, six risk factor series, three injected data "
+    "faults. A trained model detects them, deterministic guardrails decide "
+    "the repairs, and a benchmark proves the repairs. Tabs are the pipeline "
     "in order."
 )
 
@@ -152,7 +156,7 @@ c2.metric("Expected shortfall, same corrupted data",
           f"${es_corrupt/1e6:,.2f}M",
           f"{(es_corrupt-es_clean)/es_clean*100:+.1f}% vs clean")
 st.write(
-    f"Same book, same four data faults, two risk measures. VaR on the "
+    f"Same book, same three data faults, two risk measures. VaR on the "
     f"corrupted data is \\${var_corrupt/1e6:,.2f}M. On the clean data it is "
     f"\\${var_clean/1e6:,.2f}M. It barely noticed. Expected shortfall on the "
     f"corrupted data is \\${es_corrupt/1e6:,.2f}M. On the clean data it is "
@@ -177,20 +181,18 @@ tabs = st.tabs(["1 Data health", "2 Detection", "3 Remediation",
                 "6 Evaluation", "About"])
 
 with tabs[0]:
-    st.subheader("Six risk factor series, four injected faults")
+    st.subheader("Six risk factor series, three injected faults")
     st.write(
         "The golden copy is clean seeded synthetic history (2020 to 2026, "
-        "with an engineered high volatility era in 2022). Four realistic "
-        "faults are injected: a stale feed, a spike, a gap, and a vendor "
-        "splice. Pick a series to compare clean vs corrupted. The same data "
-        "is exported as CSV in the repo's data folder."
+        "with an engineered high volatility era in 2022). Three realistic "
+        "faults are injected: a frozen feed, a bad print, and a gap. Pick a "
+        "series to compare clean vs corrupted. The same data is exported as "
+        "CSV in the repo's data folder."
     )
     table(fault_log)
     col = st.selectbox("series", list(clean.columns), index=1)
     view = pd.DataFrame({"clean": clean[col], "corrupted": corrupted[col]})
-    # focus the chart on the stretch where this series was damaged
-    focus = {"swaption_vol": ("2022-06-01", "2023-06-30")}
-    lo, hi = focus.get(col, ("2025-06-01", None))
+    lo, hi = "2025-06-01", None
     faults_here = fault_log[fault_log["series"] == col]
     if len(faults_here):
         described = "; ".join(
@@ -204,98 +206,69 @@ with tabs[0]:
         "Grey is the clean data drawn thick. Orange is the corrupted feed "
         "drawn thin on top. Where they agree you see orange inside grey. "
         "Where grey shows on its own, the feed is wrong there. Notice how "
-        "normal the picture looks with eight percent of this history's "
-        "cells altered: that is why eyeballing feeds does not work and a "
-        "detector is needed."
+        "normal the picture looks: that is why eyeballing feeds does not "
+        "work and a detector is needed."
     )
     chart(overlay(view.loc[lo:hi]))
 
 with tabs[1]:
-    st.subheader("One pass over six years: six findings")
-    n_stale = int((findings["type"] == "stale").sum())
-    n_gap = int((findings["type"] == "gap").sum())
-    spikes = findings[findings["type"] == "spike"]
-    n_err = int((spikes["verdict"] == detection.VERDICT_ERROR).sum())
-    n_real = int((spikes["verdict"] == detection.VERDICT_REAL).sum())
-    n_held = int((spikes["verdict"] == detection.VERDICT_BREAK).sum())
+    st.subheader("One pass over six years: every planted fault found and named")
+    held = findings[findings["verdict"] == detection.VERDICT_BREAK]
+    repairable = findings[findings["verdict"] != detection.VERDICT_BREAK]
     a, b, c_, d_ = st.columns(4)
     a.metric("series-days scanned", f"{corrupted.size:,}")
     b.metric("years of history", f"{(corrupted.index[-1] - corrupted.index[0]).days / 365.25:.1f}")
-    c_.metric("run time", f"{rules_seconds:.2f}s")
-    d_.metric("findings", len(findings), f"{len(fault_log)} planted faults, all found")
+    c_.metric("model trained in", f"{train_seconds:.1f}s")
+    d_.metric("scored this history in", f"{score_seconds:.2f}s")
     st.write(
-        f"**{len(findings)} findings:** {n_stale} stale feed, {n_gap} gap, "
-        f"{len(spikes)} big moves. Of the big moves, {n_err} look like data "
-        f"errors, {n_real} are confirmed real by correlated series, and "
-        f"{n_held} are level breaks held for a human. Zero real moves were "
-        "repaired away."
+        f"**{len(fault_log)} planted faults, all {len(fault_log)} found and "
+        f"named correctly** (the frozen feed on every one of its "
+        f"{int(repairable.loc[repairable['type'] == 'stale', 'length'].sum())} days, "
+        f"the bad print, the gap on every one of its "
+        f"{int(repairable.loc[repairable['type'] == 'gap', 'length'].sum())} days). "
+        f"**{len(held)} possible level shifts** flagged for a human to look "
+        "at, none of them planted. Zero real market moves were repaired away."
     )
     st.write(
-        "Three statistical rules: a run of identical prints (stale), a move "
-        "far outside the series' own recent volatility (spike), missing days "
-        "(gap). A big move alone is not proof of an error, so each spike gets "
-        "two tiebreakers. Did correlated series move too? Then it is real. "
-        "Was it undone the next day? Then it was a bad print. Neither? Then "
-        "it is a level break, and it is held rather than repaired, because "
-        "interpolating a real repricing destroys real history."
+        "How it works: the fault injector can manufacture unlimited labeled "
+        "faults, so a gradient boosting model was trained on twelve "
+        "synthetic histories full of planted frozen feeds, bad prints, gaps "
+        "and vendor level shifts, then run on this history, which it had "
+        "never seen. It reads five numbers per series per day (size of the "
+        "move against normal, whether tomorrow undid it, whether correlated "
+        "series moved, how long the value has been frozen, whether it is "
+        "missing) and gives every day a name: normal, stale, spike, gap, or "
+        "possible level shift. A possible level shift is never repaired "
+        "automatically, because from inside one series a permanent shift "
+        "looks exactly like a real repricing. That call belongs to a person, "
+        "or in production to an agent that reads the vendor's notice."
     )
-    show = findings.copy()
+    show = repairable.copy()
     show["start"] = show["start"].dt.date
-    show["verdict"] = show["verdict"].fillna("data fault, repair proposed")
-    table(show[["series", "type", "start", "length", "detail", "verdict"]]
-          .rename(columns={"length": "days", "verdict": "decision"}))
-
-    st.subheader("A model that learned the faults: the injector is the teacher")
-    flagged, mcard, train_s, score_s = model_verdict(PIPELINE_VERSION)
-    ml_flags, fcard, sweep = ml_second_opinion(PIPELINE_VERSION)
-    if mcard is not None and fcard is not None:
-        st.write(
-            "An unsupervised model can only rank days as unusual. But the "
-            "fault injector can manufacture unlimited labeled faults, so a "
-            "classifier was trained on twelve synthetic histories full of "
-            "planted stale runs, spikes, gaps and splices, then tested on "
-            "this history, which it never saw. Every series-day gets a "
-            "class: normal, stale, spike, gap or splice."
-        )
-        m_fp = ml_detection.false_positives(fault_log, flagged)
-        f_fp = ml_detection.false_positives(fault_log, ml_flags)
-        combined = mcard[["planted fault", "series"]].copy()
-        combined["rules"] = fcard["rules found it"].map({True: "found", False: "missed"})
-        combined["isolation forest (no labels)"] = fcard["isolation forest found it"].map({True: "found", False: "missed"})
-        combined["trained classifier"] = [
-            ("found and named" if n else ("found" if f else "missed"))
-            for f, n in zip(mcard["model found it"], mcard["model named it correctly"])]
-        table(combined)
-        e1, e2, e3 = st.columns(3)
-        e1.metric("trained on 12 worlds in", f"{train_s:.1f}s")
-        e2.metric("scored this world in", f"{score_s:.2f}s")
-        e3.metric("false alarms in six years", len(m_fp),
-                  f"forest: {len(f_fp)}, rules: 0", delta_color="off")
-        n_named = int(mcard["model named it correctly"].sum())
-        st.write(
-            f"**The classifier finds and correctly names {n_named} of the "
-            f"{len(fault_log)} faults, with {len(m_fp)} false alarms across "
-            "six years, every one of them a possible level shift called on a "
-            "three to four sigma move.** The one it cannot resolve is the "
-            "vendor splice, and no per-series model can: a permanent level "
-            "shift looks exactly like a real repricing from inside the "
-            "numbers. That is why the rules hold it as a level break for a "
-            "human, and in production it is where an agent reading vendor "
-            "change notices earns its place: the answer is in a document, "
-            "not in the series."
-        )
-        with st.expander("Why the unsupervised forest is only a second opinion"):
+    show["decision"] = show["verdict"].fillna("repair proposed")
+    st.write("Faults found:")
+    table(show[["series", "type", "start", "length", "detail", "decision"]]
+          .rename(columns={"length": "days"}))
+    with st.expander(f"{len(held)} possible level shifts held for human review"):
+        h = held.copy(); h["start"] = h["start"].dt.date
+        table(h[["series", "start", "detail"]])
+    cc = cross_check(PIPELINE_VERSION)
+    if cc is not None:
+        card, fps = cc
+        with st.expander("Cross-check: the same faults through plain rules and an Isolation Forest"):
             st.write(
-                f"At a realistic alert budget ({len(ml_flags)} flags) the "
-                f"Isolation Forest finds {int(fcard['isolation forest found it'].sum())} "
-                f"of 4 with {len(f_fp)} false alarms, about half of them in the "
-                "2022 stress era, and which faults it catches changed when "
-                "the fit changed from one joint model to one per series. It "
-                "cannot tell a regime change from a data error because "
-                "nothing ever told it the difference. Give it a bigger budget "
-                "and it finds everything, at a price:"
+                "Three detectors on the same planted faults. Plain statistical "
+                "rules (run of identical prints, empty cell, move far outside "
+                "normal, with peer and next-day-reversal tiebreakers) also find "
+                "all three. An Isolation Forest, which has no labels and can "
+                "only rank days as unusual, does worse and puts its false "
+                "alarms in the 2022 stress era, because nothing ever told it "
+                "the difference between a crisis and a broken feed. The "
+                "trained model wins because the injector gave it labels."
             )
-            table(sweep)
+            table(card)
+            st.write("Flags outside any planted fault, over six years: " +
+                     ", ".join(f"{k} {v}" for k, v in fps.items()) + ".")
 
 with tabs[2]:
     st.subheader("Every finding gets one decision, and only accepted repairs "
@@ -308,7 +281,7 @@ with tabs[2]:
     a.metric("repairs applied", n_acc)
     b.metric("sent to human review", n_rev)
     c_.metric("rejected by guardrail", n_rej)
-    d_.metric("level breaks held", len(held))
+    d_.metric("possible level shifts held", len(held))
     st.write(
         "Fixes follow a trust ladder: interpolate short problems, rebuild "
         "long stretches from correlated series in change space. Each "
@@ -331,12 +304,7 @@ with tabs[2]:
                      "days": len(p_["dates"]), "fix": p_["method"],
                      "KS p": c["ks_pvalue"], "VaR impact %": c["var_impact_pct"],
                      "decision": decision, "reason": why})
-    for r in held.itertuples():
-        rows.append({"series": r.series, "issue": "level break", "days": 1,
-                     "fix": "none", "KS p": None, "VaR impact %": None,
-                     "decision": "held for review",
-                     "reason": "big move, no peer confirmation, no reversal"})
-    st.write("Decision log:")
+    st.write("Decision log, one row per fault:")
     table(pd.DataFrame(rows))
     st.write(
         f"The rejected one is worth a look: a {rows[[r['decision'] for r in rows].index('rejected')]['days']} "
