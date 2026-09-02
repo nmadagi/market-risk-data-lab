@@ -105,7 +105,7 @@ def staleness_sweep(version: str):
         v = risk.var99(risk.pnl_vector(c.ffill()))
         rows.append({"days stalled": days,
                      "share of 500 day window": f"{days/5:.0f}%",
-                     "99% VaR": f"${v/1e6:,.2f}M",
+                     "99% 1 day VaR": f"${v/1e6:,.2f}M",
                      "vs clean": f"{(v-base)/base*100:+.1f}%"})
     return pd.DataFrame(rows)
 
@@ -135,13 +135,14 @@ st.write(
 
 st.subheader("The finding: your risk number is not a data alarm")
 c1, c2 = st.columns(2)
-c1.metric("99% VaR with corrupted data", f"${var_corrupt/1e6:,.2f}M",
+c1.metric("99% 1 day VaR with corrupted data", f"${var_corrupt/1e6:,.2f}M",
           f"{(var_corrupt-var_clean)/var_clean*100:+.1f}% vs clean, barely moves")
-c2.metric("Expected shortfall, same corrupted data",
+c2.metric("99% 1 day expected shortfall, same corrupted data",
           f"${es_corrupt/1e6:,.2f}M",
           f"{(es_corrupt-es_clean)/es_clean*100:+.1f}% vs clean")
 st.write(
-    f"Same book, same three data faults, two risk measures. VaR on the "
+    f"Same book, same three data faults, two risk measures, both one day at "
+    f"99 percent. VaR on the "
     f"corrupted data is \\${var_corrupt/1e6:,.2f}M. On the clean data it is "
     f"\\${var_clean/1e6:,.2f}M. It barely noticed. Expected shortfall on the "
     f"corrupted data is \\${es_corrupt/1e6:,.2f}M. On the clean data it is "
