@@ -39,71 +39,15 @@ its clean value with every applied point flagged. The stressed VaR window
 search independently lands on the engineered 2022 high volatility era at
 roughly 2.9x ordinary VaR.
 
-## How detection decides what a big move is
+## How a big move gets decided
 
-A big move on its own is not evidence of an error. Every spike gets two
-tiebreakers. Peers: if correlated series moved the same day, it is a
-market event. Reversal: a corrupt print is undone the next day when the
-feed returns to reality; a genuine regime move or a vendor level shift is
-not. Spike plus reversal is a data error and gets a repair proposal. Spike
-with neither is a level break and is held for a human, because
-interpolating a real repricing destroys real history. In the demo, the
-2022 stress onset and the vendor splice seam are both held, not repaired.
-
-## The detector: a model that learned the faults, because the injector is the teacher
-
-An unsupervised model can only rank days as unusual. But the fault
-injector can manufacture unlimited labeled faults, so a gradient boosting
-classifier is trained on twelve synthetic histories full of planted frozen
-feeds, bad prints, gaps and vendor level shifts, then run on the demo
-history, which it never saw. It finds and correctly names all three
-planted faults on every affected day (14 frozen days, the bad print, 20
-missing days), trains in about two seconds and scores six years in a few
-hundredths of a second. It also flags 8 possible level shifts across six
-years for a human to look at; none were planted, and none are repaired
-automatically, because from inside one series a permanent shift looks
-exactly like a real repricing. In production that call belongs to an
-agent that reads the vendor's notice, which is why a vendor splice is not
-in the demo.
-
-## Rules and an Isolation Forest as a cross-check
-
-Plain statistical rules (run of identical prints, empty cell, move far
-outside normal, with peer and next-day-reversal tiebreakers) also find all
-three. An Isolation Forest, the same tool used without labels on real FX
-exposure data, finds fewer at a sensible alert budget and puts its false
-alarms in the 2022 stress era, because nothing ever told it the
-difference between a crisis and a broken feed. The three sit in one table
-on the detection tab.
-
-## Which fill method to trust, and the metric that decides
-
-A mask-and-recover harness hides observed points, rebuilds each outage the
-way the pipeline would, and scores four methods against the clean data: carry
-forward, linear interpolation, an OLS regression on correlated peers, and
-a random forest on the same peer inputs. The forest gets identical
-features and identical anchoring, so the benchmark isolates the functional
-form rather than flattering the fancier model.
-
-The result is worth reading twice. Rank by average error and you ship
-interpolation. Rank by tail preservation, which is what risk data actually
-needs, and the random forest wins on every series that has peers to learn
-from, and it is the only method whose repaired region comes close to
-passing the distribution test. The metric you choose decides the model you
-deploy. No method reaches a tail ratio of 1: every fill flattens
-volatility to some degree, which is exactly why filled points stay flagged
-and never quietly drive stress calibration.
-
-## What the pipeline refuses to fix
-
-A repair that fails its guardrail is not applied. Those points are carried
-forward so the risk engine can run, but carry forward is the method with a
-tail ratio of zero, so it is a stopgap and not a fix. Every such point is
-listed on an exception report with the reason, and the credit spread gap
-sits there permanently in the demo because that factor has no correlated
-peer to rebuild from. A factor with no usable proxy is an escalation, not
-a computation. A pipeline that silently filled these would be worse than
-one that leaves them visible.
+A big move on its own is not evidence of an error. The model reads two
+tiebreakers among its five features: did correlated series move the same
+day (a market event), and was the move undone the next day (a bad print).
+A big move with neither is a possible level shift, and it is held for a
+human rather than repaired, because interpolating a real repricing
+destroys real history. In the demo, eight such days across six years are
+held; none were planted.
 
 ## How repairs are accepted
 
