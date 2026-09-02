@@ -64,19 +64,6 @@ def overlay(view: pd.DataFrame, height: int = 300):
     return alt.layer(clean_layer, corrupt_layer).properties(height=height)
 
 
-def difference(clean_s: pd.Series, corrupt_s: pd.Series, height: int = 160):
-    """corrupted minus clean over the whole history. Zero means identical,
-    a break means the value is missing, anything else is a fault."""
-    d = (corrupt_s - clean_s).rename("corrupted minus clean") \
-        .rename_axis("date").reset_index()
-    return alt.Chart(d).mark_line(color=CORRUPT_COLOR, strokeWidth=1.5).encode(
-        x=alt.X("date:T", title=None),
-        y=alt.Y("corrupted minus clean:Q", title=None),
-        tooltip=[alt.Tooltip("date:T"),
-                 alt.Tooltip("corrupted minus clean:Q", format=".4f")]
-    ).properties(height=height)
-
-
 @st.cache_data
 def load_all(version: str):
     clean = generate_market_data()
@@ -168,22 +155,27 @@ with tabs[0]:
     table(fault_log)
     col = st.selectbox("series", list(clean.columns), index=1)
     view = pd.DataFrame({"clean": clean[col], "corrupted": corrupted[col]})
+    # focus the chart on the stretch where this series was damaged
+    focus = {"swaption_vol": ("2022-06-01", "2023-06-30")}
+    lo, hi = focus.get(col, ("2025-06-01", None))
+    faults_here = fault_log[fault_log["series"] == col]
+    if len(faults_here):
+        described = "; ".join(
+            f"{r.fault} ({r.start.date()}" + (f" to {r.end.date()})" if r.end != r.start else ")")
+            for r in faults_here.itertuples())
+        st.write(f"Faults injected on this series: {described}.")
+    else:
+        st.write("No faults were injected on this series, so the two lines "
+                 "sit exactly on top of each other.")
     st.write(
-        "Grey is the clean history drawn thick; orange is the corrupted "
-        "feed drawn thin on top. Where the two agree you see orange inside "
-        "grey. Where grey shows on its own, the feed is wrong there. "
-        "Last fifteen months:"
+        "Grey is the clean truth drawn thick. Orange is the corrupted feed "
+        "drawn thin on top. Where they agree you see orange inside grey. "
+        "Where grey shows on its own, the feed is wrong there. Notice how "
+        "normal the picture looks with eight percent of this history's "
+        "cells altered: that is why eyeballing feeds does not work and a "
+        "detector is needed."
     )
-    chart(overlay(view.loc["2025-06-01":]))
-    st.write("Around the vendor switch in January 2023 (the splice):")
-    chart(overlay(view.loc["2022-06-01":"2023-06-30"], height=220))
-    st.write(
-        "Corrupted minus clean over the whole history. Zero means the two "
-        "files agree; a break means the value is missing; anything else is "
-        "a fault. This is the map of everything that was done to this "
-        "series."
-    )
-    chart(difference(clean[col], corrupted[col]))
+    chart(overlay(view.loc[lo:hi]))
 
 with tabs[1]:
     st.subheader("Statistical detection, no model needed yet")
