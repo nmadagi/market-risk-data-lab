@@ -243,14 +243,14 @@ with tabs[1]:
         "looks exactly like a real repricing. That call belongs to a person, "
         "or in production to an agent that reads the vendor's notice."
     )
-    show = repairable.copy()
+    show = repairable.reset_index(drop=True).copy()
     show["start"] = show["start"].dt.date
     show["decision"] = show["verdict"].fillna("repair proposed")
     st.write("Faults found:")
     table(show[["series", "type", "start", "length", "detail", "decision"]]
           .rename(columns={"length": "days"}))
     with st.expander(f"{len(held)} possible level shifts held for human review"):
-        h = held.copy(); h["start"] = h["start"].dt.date
+        h = held.reset_index(drop=True).copy(); h["start"] = h["start"].dt.date
         table(h[["series", "start", "detail"]])
     cc = cross_check(PIPELINE_VERSION)
     if cc is not None:
