@@ -14,10 +14,17 @@ import re
 def build_facts(findings, checks, var_corrupt, var_repaired) -> dict:
     accepted = [c for c in checks if c["accepted"]]
     review = [c for c in checks if c["needs_review"]]
+    rejected = [c for c in checks if not c["accepted"] and not c["needs_review"]]
+    held = 0
+    if len(findings) and "verdict" in findings:
+        held = int((findings["verdict"] == "level break, review").sum())
     return {
         "n_findings": len(findings),
+        "n_faults": len(checks),
+        "n_held": held,
         "n_accepted": len(accepted),
         "n_review": len(review),
+        "n_rejected": len(rejected),
         "var_corrupt_m": round(var_corrupt / 1e6, 2),
         "var_repaired_m": round(var_repaired / 1e6, 2),
         "series_touched": sorted({c["series"] for c in checks}),
@@ -25,13 +32,17 @@ def build_facts(findings, checks, var_corrupt, var_repaired) -> dict:
 
 
 def template_report(facts: dict) -> str:
+    n_faults = facts.get("n_faults", facts["n_findings"])
     lines = [
-        f"Data quality report: {facts['n_findings']} findings across "
-        f"{len(facts['series_touched'])} series ({', '.join(facts['series_touched'])}).",
+        f"Data quality report: {n_faults} faults found across "
+        f"{len(facts['series_touched'])} series ({', '.join(facts['series_touched'])})"
+        + (f", plus {facts['n_held']} possible level shifts held for review."
+           if facts.get("n_held") else "."),
         f"{facts['n_accepted']} repairs auto-accepted by guardrails; "
-        f"{facts['n_review']} routed to human review on VaR materiality.",
+        + (f"{facts['n_rejected']} rejected; " if "n_rejected" in facts else "")
+        + f"{facts['n_review']} routed to human review on VaR materiality.",
         f"99 pct VaR moved from {facts['var_corrupt_m']}M (corrupted inputs) to "
-        f"{facts['var_repaired_m']}M after repair. All filled points are flagged "
+        f"{facts['var_repaired_m']}M after repair. Every applied point is flagged "
         "and reversible; the golden copy was never edited in place.",
     ]
     return " ".join(lines)

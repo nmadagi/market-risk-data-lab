@@ -442,12 +442,13 @@ with tabs[6]:
         "point."
     )
     st.write(
-        "Pipeline: generate golden copy > inject faults > detect "
-        "(run length, EWMA z-score, calendar, peer and reversal tiebreakers) "
-        "> propose fixes (interpolation or change-space peer regression, "
-        "with a random forest benchmarked against both) > "
-        "per-proposal guardrail checks (KS distribution test, VaR impact "
-        "routing) > apply accepted only, with flags > risk engine (hist sim "
-        "VaR, sVaR window search, sensitivities, coherent stress scenarios, "
-        "backtesting) > mask and recover evaluation harness."
+        "Pipeline: generate golden copy > inject faults > detect with a "
+        "gradient boosting model trained on synthetic faults (plain rules "
+        "and an Isolation Forest as a cross-check) > propose fixes "
+        "(interpolation or change-space peer regression, with a random "
+        "forest benchmarked against both) > per-proposal guardrail checks "
+        "(KS distribution test, VaR impact routing) > apply accepted only, "
+        "with flags > risk engine (hist sim VaR, sVaR window search, "
+        "sensitivities, coherent stress scenarios, backtesting) > mask and "
+        "recover evaluation harness."
     )
