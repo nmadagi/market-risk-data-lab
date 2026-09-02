@@ -49,5 +49,5 @@ def test_dollar_amounts_are_not_mangled_into_math(app):
             assert "\\$" in body
 
 
-def test_all_seven_tabs_exist(app):
-    assert len(app.tabs) == 7
+def test_all_five_tabs_exist(app):
+    assert len(app.tabs) == 5

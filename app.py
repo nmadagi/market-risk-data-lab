@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from data.generate import generate_market_data
-from src import agent, detection, evaluation, ml_detection, remediation, risk
+from src import agent, detection, ml_detection, remediation, risk
 from src.corruption import apply_default_faults, inject_stale
 
 st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
@@ -18,7 +18,7 @@ st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-02-model-first-three-faults"
+PIPELINE_VERSION = "2026-09-02-five-tabs"
 
 
 def table(df):
@@ -121,8 +121,17 @@ st.title("Market Risk Data Lab")
 st.caption(
     "One synthetic trading book, six risk factor series, three injected data "
     "faults. A trained model detects them, deterministic guardrails decide "
-    "the repairs, and a benchmark proves the repairs. Tabs are the pipeline "
-    "in order."
+    "the repairs, and a benchmark proves the repairs. All data is synthetic "
+    "and seeded; the portfolio is a toy book held as sensitivities. Nothing "
+    "here claims production scale; the architecture is the point."
+)
+st.caption(
+    "Pipeline, and the tabs in order: generate a clean history > inject "
+    "faults > detect with a gradient boosting model trained on synthetic "
+    "faults > propose repairs and score each one against deterministic "
+    "guardrails, applying only what passes > run the risk engine "
+    "(historical simulation VaR, stressed VaR, sensitivities, stress "
+    "scenarios, backtesting) on the repaired data."
 )
 
 st.subheader("The finding: your risk number is not a data alarm")
@@ -154,8 +163,7 @@ st.write(
 )
 
 tabs = st.tabs(["1 Data health", "2 Detection", "3 Remediation",
-                "4 VaR and sVaR", "5 Sensitivities and stress",
-                "6 Evaluation", "About"])
+                "4 VaR and sVaR", "5 Sensitivities and stress"])
 
 with tabs[0]:
     st.subheader("Six risk factor series, three injected faults")
@@ -356,60 +364,3 @@ with tabs[4]:
         "several is finding which direction hurts."
     )
     table(risk.stress_pnl().rename(columns={"pnl_musd": "P&L ($M)"}))
-
-with tabs[5]:
-    st.subheader("Which fill method deserves trust, and the metric that decides")
-    st.write(
-        "Mask and recover: hide points that are actually known, rebuild each "
-        "outage the way the pipeline would, score against the clean data. MAE is "
-        "average accuracy. tail_ratio is repaired volatility over clean "
-        "volatility, and it is the score that matters for risk: below 1 "
-        "means the method smooths, and smoothed history understates VaR. "
-        "A random forest gets the same inputs as the linear proxy, so the "
-        "test isolates the model, not the features."
-    )
-    col = st.selectbox("series to evaluate", list(clean.columns), index=1,
-                       key="evalcol")
-    ev = evaluation.mask_and_recover(clean, col)
-    table(ev)
-    by_mae = ev["mae"].idxmin()
-    by_tail = ev["tail_ratio"].idxmax()
-    if by_mae == by_tail:
-        st.write(f"**On this series {by_mae} wins on both average error and "
-                 "tail preservation.**")
-    else:
-        st.write(f"**Rank by average error and you would ship {by_mae}. Rank "
-                 f"by tail preservation and you ship {by_tail}.** The metric "
-                 "you choose decides the model you deploy, and for risk data "
-                 "average accuracy is the wrong metric.")
-    st.write(
-        "No method reaches a tail ratio of 1: every fill flattens volatility "
-        "somewhat, which is why filled points stay flagged. Carry forward "
-        "scores exactly zero, and it is what the pipeline falls back to for "
-        "points it refuses to repair. A series with no correlated peers has "
-        "no proxy or forest row at all: a factor with no proxy is an "
-        "escalation, not a computation."
-    )
-
-with tabs[6]:
-    st.subheader("What this is")
-    st.write(
-        "A compact demonstration of the data layer under trading book risk "
-        "models. All data is synthetic and seeded; the portfolio is a toy "
-        "book held as sensitivities. The design principle throughout: "
-        "automated proposals, deterministic guardrails, flagged and "
-        "reversible changes, and statistical evaluation before trust. "
-        "Nothing here claims production scale; the architecture is the "
-        "point."
-    )
-    st.write(
-        "Pipeline: generate golden copy > inject faults > detect with a "
-        "gradient boosting model trained on synthetic faults (plain rules "
-        "and an Isolation Forest as a cross-check) > propose fixes "
-        "(interpolation or change-space peer regression, with a random "
-        "forest benchmarked against both) > per-proposal guardrail checks "
-        "(KS distribution test, VaR impact routing) > apply accepted only, "
-        "with flags > risk engine (hist sim VaR, sVaR window search, "
-        "sensitivities, coherent stress scenarios, backtesting) > mask and "
-        "recover evaluation harness."
-    )
