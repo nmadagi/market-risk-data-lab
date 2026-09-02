@@ -18,7 +18,7 @@ st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-02-five-tabs"
+PIPELINE_VERSION = "2026-09-02-four-tabs"
 
 
 def table(df):
@@ -162,8 +162,8 @@ st.write(
     f"({(es_repaired-es_clean)/es_clean*100:+.1f}% vs clean)."
 )
 
-tabs = st.tabs(["1 Data health", "2 Detection", "3 Remediation",
-                "4 VaR and sVaR", "5 Sensitivities and stress"])
+tabs = st.tabs(["1 Data health", "2 Find and fix",
+                "3 VaR and sVaR", "4 Sensitivities and stress"])
 
 with tabs[0]:
     st.subheader("Six risk factor series, three injected faults")
@@ -197,7 +197,7 @@ with tabs[0]:
     chart(overlay(view.loc[lo:hi]))
 
 with tabs[1]:
-    st.subheader("One pass over six years: every planted fault found and named")
+    st.subheader("Find: one pass over six years, every planted fault found and named")
     held = findings[findings["verdict"] == detection.VERDICT_BREAK]
     repairable = findings[findings["verdict"] != detection.VERDICT_BREAK]
     a, b, c_, d_ = st.columns(4)
@@ -216,50 +216,42 @@ with tabs[1]:
         "planted. Zero real market moves were repaired away."
     )
     st.write(
-        "How it works: the fault injector can manufacture unlimited labeled "
-        "faults, so a gradient boosting model was trained on twelve "
-        "synthetic histories full of planted frozen feeds, bad prints, gaps "
-        "and vendor level shifts, then run on this history, which it had "
-        "never seen. It reads five numbers per series per day (size of the "
-        "move against normal, whether tomorrow undid it, whether correlated "
-        "series moved, how long the value has been frozen, whether it is "
-        "missing) and gives every day a name: normal, stale, spike, gap, or "
-        "possible level shift. A possible level shift is never repaired "
-        "automatically, because from inside one series a permanent shift "
-        "looks exactly like a real repricing. That call belongs to a person, "
-        "or in production to an agent that reads the vendor's notice."
+        "How: the fault injector can manufacture unlimited labeled faults, so "
+        "a gradient boosting model was trained on twelve synthetic histories "
+        "full of planted frozen feeds, bad prints, gaps and vendor level "
+        "shifts, then run on this history, which it had never seen. It reads "
+        "five numbers per series per day (size of the move against normal, "
+        "whether tomorrow undid it, whether correlated series moved, how long "
+        "the value has been frozen, whether it is missing) and names each "
+        "day: normal, stale, spike, gap, or possible level shift. A possible "
+        "level shift is never repaired automatically, because from inside one "
+        "series a permanent shift looks exactly like a real repricing; that "
+        "call belongs to a person, or in production to an agent that reads "
+        "the vendor's notice."
     )
     show = repairable.reset_index(drop=True).copy()
     show["start"] = show["start"].dt.date
     show["decision"] = show["verdict"].fillna("repair proposed")
-    st.write("Faults found:")
     table(show[["series", "type", "start", "length", "detail", "decision"]]
           .rename(columns={"length": "days"}))
-    with st.expander(f"{len(held)} possible level shift{'s' if len(held) != 1 else ''} held for human review"):
-        h = held.reset_index(drop=True).copy(); h["start"] = h["start"].dt.date
-        table(h[["series", "start", "detail"]])
 
-with tabs[2]:
-    st.subheader("Every finding gets one decision, and only accepted repairs "
-                 "touch the data")
+    st.subheader("Fix: every fault gets one decision, and only accepted repairs touch the data")
     n_acc = sum(c["accepted"] for c in checks)
     n_rev = sum(c["needs_review"] for c in checks)
     n_rej = len(checks) - n_acc - n_rev
-    held = findings[findings["verdict"] == detection.VERDICT_BREAK]
     a, b, c_, d_ = st.columns(4)
     a.metric("repairs applied", n_acc)
     b.metric("sent to human review", n_rev)
     c_.metric("rejected by guardrail", n_rej)
     d_.metric("possible level shifts held", len(held))
     st.write(
-        "Fixes follow a trust ladder: interpolate short problems, rebuild "
-        "long stretches from correlated series in change space. Each "
-        "proposal is scored alone, using only data the pipeline would "
-        "really have, against two deterministic guardrails: does the "
-        "repaired stretch keep the series' own return distribution (KS "
-        "test), and does the repair move VaR materially (routes to a "
-        "human). The model proposes, the controls dispose, and the golden "
-        "copy is never edited in place."
+        "How: short problems are interpolated, long stretches are rebuilt "
+        "from correlated series in change space. Each proposal is scored "
+        "alone against two deterministic guardrails: does the repaired "
+        "stretch keep the series' own return distribution (KS test), and "
+        "does the repair move VaR materially (routes to a human). Only "
+        "accepted repairs reach the staging copy; the golden copy is never "
+        "edited in place. The model proposes, the controls dispose."
     )
     rows = []
     for p_, c in zip(proposals, checks):
@@ -273,20 +265,20 @@ with tabs[2]:
                      "days": len(p_["dates"]), "fix": p_["method"],
                      "KS p": c["ks_pvalue"], "VaR impact %": c["var_impact_pct"],
                      "decision": decision, "reason": why})
-    st.write("Decision log, one row per fault:")
     table(pd.DataFrame(rows))
-    st.write(
-        f"The rejected one is worth a look: a {rows[[r['decision'] for r in rows].index('rejected')]['days']} "
-        "day straight line fill has no volatility, and a guardrail that "
-        "compares return distributions catches exactly that. The "
-        f"{len(unresolved)} points it would have filled stay on the "
-        "exception report, carried forward as a stopgap and clearly "
-        "labeled, until a person picks a proxy. The pipeline never fills "
-        "silently."
-        if n_rej else
-        f"{len(unresolved)} points have no accepted repair; they are carried "
-        "forward as a stopgap and listed on the exception report."
-    )
+    if n_rej:
+        st.write(
+            f"The rejected one is worth a look: a {rows[[r['decision'] for r in rows].index('rejected')]['days']} "
+            "day straight line fill has no volatility, and a guardrail that "
+            "compares return distributions catches exactly that. The "
+            f"{len(unresolved)} points it would have filled stay on the "
+            "exception report, carried forward as a stopgap and clearly "
+            "labeled, until a person picks a proxy. The pipeline never fills "
+            "silently."
+        )
+    with st.expander(f"{len(held)} possible level shift{'s' if len(held) != 1 else ''} held for human review"):
+        h = held.reset_index(drop=True).copy(); h["start"] = h["start"].dt.date
+        table(h[["series", "start", "detail"]])
     with st.expander(f"Audit trail: {len(flags)} applied points, each with its method"):
         table(flags)
     with st.expander(f"Exception report: {len(unresolved)} unresolved points"):
@@ -295,7 +287,7 @@ with tabs[2]:
     text, source = agent.narrative(facts)
     st.info(f"Morning report ({source}): {text}")
 
-with tabs[3]:
+with tabs[2]:
     st.subheader("VaR and stressed VaR on the repaired data")
     pnl = risk.pnl_vector(staged)
     es = risk.expected_shortfall(pnl)
@@ -333,7 +325,7 @@ with tabs[3]:
                  "bunched together are worse than the count alone.")
         st.line_chart(bt[["pnl", "var"]], height=240)
 
-with tabs[4]:
+with tabs[3]:
     st.subheader("Sensitivities: what the book cares about, factor by factor")
     st.write(
         "The book is held as sensitivities: bump one market number by one "
