@@ -467,16 +467,22 @@ def test_classifier_finds_and_names_every_planted_fault(classifier):
     assert card.loc["stale", "days flagged in window"] == 14
     assert card.loc["gap", "days flagged in window"] == 20
 
-def test_splice_is_the_fault_no_per_series_model_resolves(clean):
-    """A permanent level shift looks like a real repricing from inside the
-    numbers. Honest boundary: it needs a vendor notice, not a model. That
-    is why the splice is not in the demo and why predicted level shifts
-    are held for a human instead of repaired."""
+def test_predicted_level_shift_is_held_never_repaired(clean):
+    """A permanent level shift can be a vendor splice or a real repricing,
+    and from inside one series nothing separates the two. So whatever the
+    model calls a splice is held for a person and never repaired, whether
+    or not it named a planted one correctly."""
     out, log = inject_splice(clean, "swaption_vol", "2023-01-16", 12.0)
     model = ml_detection.train_classifier()
     flagged = ml_detection.classify(out, model)
-    card = ml_detection.classifier_scorecard(pd.DataFrame([log]), flagged)
-    assert not card.iloc[0]["model named it correctly"]
+    findings = ml_detection.findings_from_model(flagged)
+    staged, flags, proposals, checks, _ = remediation.run(out, findings)
+    seam_days = out.loc["2023-01-16":].index[:3]
+    assert not flags["date"].isin(seam_days).any()
+    assert all(p["type"] != "splice" for p in proposals)
+    held = findings[findings["verdict"] == detection.VERDICT_BREAK]
+    assert len(held) >= 1
+
 
 def test_classifier_false_alarms_are_few(classifier):
     fault_log, flagged = classifier

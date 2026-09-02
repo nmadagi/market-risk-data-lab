@@ -46,8 +46,8 @@ tiebreakers among its five features: did correlated series move the same
 day (a market event), and was the move undone the next day (a bad print).
 A big move with neither is a possible level shift, and it is held for a
 human rather than repaired, because interpolating a real repricing
-destroys real history. In the demo, eight such days across six years are
-held; none were planted.
+destroys real history. In the demo, one such day across six years is
+held; it was not planted.
 
 ## How repairs are accepted
 

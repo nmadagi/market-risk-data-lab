@@ -136,3 +136,9 @@ Model first, three faults.
 - Fixing the stale repair window while wiring this: the rules path started
   the repair one day late and touched one real day after the run. Now the
   affected dates are exactly the frozen ones. Regression test added.
+
+Library version matters for the model. scikit-learn 1.5.1 locally flagged
+eight possible level shifts; 1.9.0 (what the cloud installs) flags one, with
+the three planted faults found and named either way. Pinned 1.9.0 so the
+deployed app and the laptop agree, and so a number quoted from one is true
+of the other.
