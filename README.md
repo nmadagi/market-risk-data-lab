@@ -86,5 +86,4 @@ Optional: set ANTHROPIC_API_KEY to enable the LLM morning report; without
 it the deterministic template is used, which is the point of the fallback.
 
 All data is synthetic and seeded. The portfolio is a toy book held as
-sensitivities. Nothing here claims production scale; the architecture is
-the point.
+sensitivities.

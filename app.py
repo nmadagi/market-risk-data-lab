@@ -122,8 +122,7 @@ st.write(
     "One synthetic trading book, six risk factor series, three injected data "
     "faults. A trained model detects them, deterministic guardrails decide "
     "the repairs, and a benchmark proves the repairs. All data is synthetic "
-    "and seeded; the portfolio is a toy book held as sensitivities. Nothing "
-    "here claims production scale; the architecture is the point."
+    "and seeded; the portfolio is held as sensitivities."
 )
 st.write(
     "Pipeline, and the tabs in order: generate a clean history > inject "
