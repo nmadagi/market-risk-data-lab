@@ -11,7 +11,7 @@ from data.generate import generate_market_data
 from src import agent, detection, evaluation, remediation, risk
 from src.corruption import apply_default_faults, inject_stale
 
-st.set_page_config(page_title="market-risk-data-lab", layout="wide")
+st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
 
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
@@ -103,7 +103,7 @@ es_clean = risk.expected_shortfall(risk.pnl_vector(clean))
 es_corrupt = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
 es_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
 
-st.title("market-risk-data-lab")
+st.title("Market Risk Data Lab")
 st.caption(
     "One synthetic trading book, six risk factor series, four injected data "
     "faults. The pipeline detects them, repairs them under deterministic "

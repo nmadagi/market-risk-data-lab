@@ -1,4 +1,4 @@
-# market-risk-data-lab
+# Market Risk Data Lab
 
 I built this to demonstrate the layer of market risk that rarely gets demo
 apps: the data underneath the models. Trading book risk numbers (VaR,
