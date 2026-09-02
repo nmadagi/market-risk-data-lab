@@ -73,7 +73,6 @@ which is exactly the failure that guardrail exists to catch.
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
 | Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
 | Supervised fault classifier trained on synthetic worlds, tested on a held-out world | src/ml_detection.py |
-| Isolation Forest anomaly detection scored against the rules | src/ml_detection.py |
 | 75 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
