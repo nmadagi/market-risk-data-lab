@@ -178,68 +178,91 @@ with tabs[0]:
     chart(overlay(view.loc[lo:hi]))
 
 with tabs[1]:
-    st.subheader("Statistical detection, no model needed yet")
+    st.subheader("Finding the breaks with statistics, no model needed yet")
+    n_stale = int((findings["type"] == "stale").sum())
+    n_gap = int((findings["type"] == "gap").sum())
+    spikes = findings[findings["type"] == "spike"]
+    n_err = int((spikes["verdict"] == detection.VERDICT_ERROR).sum())
+    n_real = int((spikes["verdict"] == detection.VERDICT_REAL).sum())
+    n_held = int((spikes["verdict"] == detection.VERDICT_BREAK).sum())
     st.write(
-        "Three detectors: run length on zero returns (stale), EWMA z-score "
-        "on daily moves (spike), calendar completeness (gap). A big move on "
-        "its own is not evidence of an error, so spikes get two tiebreakers. "
-        "Peers: if correlated series moved the same day it is a market "
-        "event. Reversal: a corrupt print is undone the next day when the "
-        "feed returns to reality; a genuine regime move or a vendor level "
-        "shift is not. Spike plus reversal is a data error and gets a "
-        "repair proposal. Spike with neither is a level break, and it is "
-        "held for a human rather than interpolated away, because "
-        "interpolating a real repricing destroys real history."
+        f"**{len(findings)} findings:** {n_stale} stale feed, {n_gap} gap, "
+        f"{len(spikes)} big moves. Of the big moves, {n_err} look like data "
+        f"errors, {n_real} are confirmed real by correlated series, and "
+        f"{n_held} are level breaks held for a human."
     )
-    table(findings)
+    st.write(
+        "Three detectors: a run of identical prints (stale), a move far "
+        "outside the series' own recent volatility (spike), missing days "
+        "(gap). A big move alone is not proof of an error, so each spike "
+        "gets two tiebreakers. Did correlated series move too? Then it is "
+        "real. Was it undone the next day? Then it was a bad print. Neither? "
+        "Then it is a level break, and it is held rather than repaired, "
+        "because interpolating a real repricing destroys real history."
+    )
+    show = findings.copy()
+    show["start"] = show["start"].dt.date
+    show["verdict"] = show["verdict"].fillna("data fault, repair proposed")
+    table(show[["series", "type", "start", "length", "detail", "verdict"]]
+          .rename(columns={"length": "days", "verdict": "decision"}))
 
 with tabs[2]:
-    st.subheader("Repairs are proposed, checked one at a time, and only the "
-                 "accepted ones are applied")
-    st.write(
-        "The fix ladder by trust: interpolate short problems, rebuild long "
-        "stretches by regression on correlated peers in change space. Each "
-        "proposal is scored alone, using only data the pipeline would really "
-        "have. Two deterministic guardrails decide: a KS test that the "
-        "repaired region keeps the series' own return distribution, and a "
-        "VaR impact check that routes material changes to human review. "
-        "Rejected and held proposals are kept for the audit trail but never "
-        "touch the staging copy. The golden copy is never edited in place."
-    )
+    st.subheader("Every finding gets one decision, and only accepted repairs "
+                 "touch the data")
     n_acc = sum(c["accepted"] for c in checks)
     n_rev = sum(c["needs_review"] for c in checks)
     n_rej = len(checks) - n_acc - n_rev
-    held = findings[findings.get("verdict", pd.Series(dtype=str))
-                    == detection.VERDICT_BREAK] if not findings.empty else findings
+    held = findings[findings["verdict"] == detection.VERDICT_BREAK]
     a, b, c_, d_ = st.columns(4)
-    a.metric("accepted", n_acc)
-    b.metric("needs human review", n_rev)
+    a.metric("repairs applied", n_acc)
+    b.metric("sent to human review", n_rev)
     c_.metric("rejected by guardrail", n_rej)
     d_.metric("level breaks held", len(held))
-    for p, c in zip(proposals, checks):
-        badge = "auto-accepted" if c["accepted"] else (
-            "needs human review" if c["needs_review"] else "rejected")
-        with st.expander(f"{p['series']}: {p['rationale']}  [{badge}]"):
-            st.json(c)
-    if len(held):
-        st.write("Held for human review (no automatic repair):")
-        table(held[["series", "start", "detail", "verdict"]])
-    st.write("Applied point flags (audit trail):")
-    table(flags)
-
-    st.subheader("What the pipeline refused to fix")
     st.write(
-        f"{len(unresolved)} points have no accepted repair. They are carried "
-        "forward so the risk engine can run at all, but carrying a value "
-        "forward is the method this project's own evaluation shows has zero "
-        "volatility, so it is a stopgap and not a fix. Nothing here is "
-        "presented as repaired data: these points stay on the exception "
-        "report until a person resolves them, which for the credit spread "
-        "gap means choosing a proxy series, because that factor has no "
-        "correlated peer to rebuild from. A pipeline that silently filled "
-        "these would be worse than one that leaves them visible."
+        "Fixes follow a trust ladder: interpolate short problems, rebuild "
+        "long stretches from correlated series in change space. Each "
+        "proposal is scored alone, using only data the pipeline would "
+        "really have, against two deterministic guardrails: does the "
+        "repaired stretch keep the series' own return distribution (KS "
+        "test), and does the repair move VaR materially (routes to a "
+        "human). The model proposes, the controls dispose, and the golden "
+        "copy is never edited in place."
     )
-    table(unresolved)
+    rows = []
+    for p_, c in zip(proposals, checks):
+        if c["accepted"]:
+            decision, why = "applied", "passed both guardrails"
+        elif c["needs_review"]:
+            decision, why = "human review", f"VaR impact {c['var_impact_pct']}% is material"
+        else:
+            decision, why = "rejected", f"distribution changed (KS p = {c['ks_pvalue']})"
+        rows.append({"series": p_["series"], "issue": p_["type"],
+                     "days": len(p_["dates"]), "fix": p_["method"],
+                     "KS p": c["ks_pvalue"], "VaR impact %": c["var_impact_pct"],
+                     "decision": decision, "reason": why})
+    for r in held.itertuples():
+        rows.append({"series": r.series, "issue": "level break", "days": 1,
+                     "fix": "none", "KS p": None, "VaR impact %": None,
+                     "decision": "held for review",
+                     "reason": "big move, no peer confirmation, no reversal"})
+    st.write("Decision log:")
+    table(pd.DataFrame(rows))
+    st.write(
+        f"The rejected one is worth a look: a {rows[[r['decision'] for r in rows].index('rejected')]['days']} "
+        "day straight line fill has no volatility, and a guardrail that "
+        "compares return distributions catches exactly that. The "
+        f"{len(unresolved)} points it would have filled stay on the "
+        "exception report, carried forward as a stopgap and clearly "
+        "labeled, until a person picks a proxy. The pipeline never fills "
+        "silently."
+        if n_rej else
+        f"{len(unresolved)} points have no accepted repair; they are carried "
+        "forward as a stopgap and listed on the exception report."
+    )
+    with st.expander(f"Audit trail: {len(flags)} applied points, each with its method"):
+        table(flags)
+    with st.expander(f"Exception report: {len(unresolved)} unresolved points"):
+        table(unresolved)
     facts = agent.build_facts(findings, checks, var_corrupt, var_repaired)
     text, source = agent.narrative(facts)
     st.info(f"Morning report ({source}): {text}")
@@ -250,97 +273,103 @@ with tabs[3]:
     es = risk.expected_shortfall(pnl)
     svar, ws, we = risk.svar99(staged)
     a, b, d = st.columns(3)
-    a.metric("99% 1d VaR", f"${var_repaired/1e6:,.2f}M")
+    a.metric("99% 1 day VaR", f"${var_repaired/1e6:,.2f}M",
+             "5th worst of the last 500 replayed days")
     b.metric("Expected shortfall", f"${es/1e6:,.2f}M",
-             "the average of the days worse than VaR")
+             "average of the days worse than VaR")
     d.metric("Stressed VaR", f"${svar/1e6:,.2f}M",
-             f"window {ws.date()} to {we.date()}")
+             f"worst 12 months: {ws.date()} to {we.date()}")
     st.write(
-        "VaR replays the last 500 days of factor moves against the book's "
-        "sensitivities and reads the 1st percentile. sVaR runs the same "
-        "engine over every rolling 250 day window and keeps the worst: the "
-        "search lands on the engineered 2022 stress era, which is the Basel "
-        "2.5 idea that capital should not soften just because markets are "
-        "calm. Note the data implication: sVaR needs clean history all the "
-        "way back, which is why backfilling is a capital problem."
+        "Historical simulation: replay each of the last 500 days of market "
+        "moves against today's book, sort the 500 results, read the 5th "
+        "worst. Stressed VaR runs the same engine over every 12 month window "
+        "in history and keeps the worst; it finds the engineered 2022 stress "
+        "era by itself. That search needs clean history all the way back, "
+        "which is why backfilling is a capital problem, not housekeeping."
     )
-    st.write("Simulated P&L distribution (repaired data, last 500 days):")
-    st.bar_chart(pnl.round(-4).value_counts().sort_index(), height=220)
-
-    st.write("How broken does the data have to be before VaR reacts?")
-    st.write(
-        "Every one of the six series is frozen for a stretch, and the "
-        "stretch gets longer. VaR does not meaningfully move until the "
-        "outage covers most of the lookback window, because until then the "
-        "worst five days are still in there. A stalled feed is close to "
-        "invisible in this number."
-    )
+    st.write("**How broken must the data be before VaR notices?** Every "
+             "series frozen for a growing stretch:")
     table(staleness_sweep(PIPELINE_VERSION))
-
+    st.write(
+        "VaR does not move until the outage covers most of the window, "
+        "because until then the five worst days are still in there. A "
+        "stalled feed is close to invisible in this number."
+    )
+    with st.expander("Simulated P&L distribution, last 500 days"):
+        st.bar_chart(pnl.round(-4).value_counts().sort_index(), height=220)
     bt = risk.backtest(staged)
     n_exc = int(bt["exceedance"].sum())
-    st.write(
-        f"Backtest, last 250 days: {n_exc} days where the loss was bigger "
-        "than the prior day's VaR, against about 2.5 expected at 99 pct. "
-        "Too many means the model understates risk; clustered misses are "
-        "worse than the count alone."
-    )
-    st.line_chart(bt[["pnl", "var"]], height=240)
+    with st.expander(f"Backtest, last 250 days: {n_exc} days worse than VaR "
+                     "(about 2.5 expected)"):
+        st.write("Too many misses means the model understates risk; misses "
+                 "bunched together are worse than the count alone.")
+        st.line_chart(bt[["pnl", "var"]], height=240)
 
 with tabs[4]:
-    st.subheader("Sensitivities: the book, factor by factor")
+    st.subheader("Sensitivities: what the book cares about, factor by factor")
     st.write(
-        "The book is held as sensitivities, the standard fast approximation: "
-        "bump one factor, the P&L response is the sensitivity times the "
-        "move. This is also the diagnostic layer: when VaR moves overnight, "
-        "decomposing by factor shows whether positions changed, markets "
-        "changed, or one series' history changed."
+        "The book is held as sensitivities: bump one market number by one "
+        "unit, and this is the dollar response. Traders hedge off these, "
+        "risk sets limits on them, and when VaR moves overnight this is the "
+        "layer that says whether positions changed, markets changed, or a "
+        "series' history changed."
     )
-    table(risk.sensitivities_table())
-    st.subheader("Stress scenarios: designed, coherent, no probabilities")
+    labels = {"DV01 2y": ("2 year rate up 0.01%", -1),
+              "DV01 5y": ("5 year rate up 0.01%", -1),
+              "DV01 10y": ("10 year rate up 0.01%", -1),
+              "Vega": ("volatility up 1 point", 1),
+              "FX delta": ("euro up 1%", 0.01),
+              "Spread DV01": ("credit spreads wider 0.01%", -1)}
+    sens = risk.sensitivities_table()
+    def plain(row):
+        what, mult = labels[row["sensitivity"]]
+        pnl = row["value"] * mult
+        verb = "gains" if pnl > 0 else "loses"
+        return f"{what}: book {verb} ${abs(pnl):,.0f}"
+    sens["in plain English"] = sens.apply(plain, axis=1)
+    table(sens)
+    st.subheader("Stress scenarios: designed shocks, several factors at once")
     st.write(
-        "Each scenario moves several factors at once, the way real events "
-        "do. Severity plus simultaneity; a scenario that shocks rates but "
-        "leaves vol untouched is fiction. Not every scenario is a loss: the "
-        "point of running several is finding which direction hurts."
+        "No probabilities: each scenario says 'if this happens, here is the "
+        "damage'. The craft is coherence, moving the factors together the "
+        "way a real event would. Not every scenario is a loss; the point of "
+        "several is finding which direction hurts."
     )
-    table(risk.stress_pnl())
+    table(risk.stress_pnl().rename(columns={"pnl_musd": "P&L ($M)"}))
 
 with tabs[5]:
-    st.subheader("Mask and recover: proving a fill method deserves trust")
+    st.subheader("Which fill method deserves trust, and the metric that decides")
     st.write(
-        "Hide observed points, reconstruct them with each method, score "
-        "against truth. Each outage is rebuilt on its own, exactly the way "
-        "the pipeline would be called. MAE is plain accuracy. The KS "
-        "p-value asks whether the repair keeps the return distribution "
-        "shape. tail_ratio is the one that matters most for risk: repaired "
-        "volatility over true volatility. Below 1 means the method smooths, "
-        "and smoothed history understates VaR and weakens stress "
-        "calibration."
-    )
-    st.write(
-        "**The result worth reading twice.** Rank by MAE and you ship "
-        "interpolation. Rank by tail preservation, which is what risk "
-        "actually needs, and the random forest wins on every series that "
-        "has peers to learn from, and it is the only method whose repaired "
-        "region comes close to passing the distribution test. The metric "
-        "you choose decides the model you deploy, and for risk data average "
-        "accuracy is the wrong metric. Note also that no method reaches a "
-        "tail ratio of 1: every fill flattens volatility to some degree, "
-        "which is the reason filled points stay flagged and never quietly "
-        "drive stress calibration."
-    )
-    st.write(
-        "Carry forward wins no prizes on purpose: it is the baseline, its "
-        "tail ratio is exactly zero, and it is what the pipeline falls back "
-        "to for points it refuses to repair. Series without correlated "
-        "peers show no proxy or forest row at all, which is itself a "
-        "finding: a factor with no proxy is a factor whose gaps cannot be "
-        "rebuilt safely, and that is an escalation, not a computation."
+        "Mask and recover: hide points that are actually known, rebuild each "
+        "outage the way the pipeline would, score against the truth. MAE is "
+        "average accuracy. tail_ratio is repaired volatility over true "
+        "volatility, and it is the score that matters for risk: below 1 "
+        "means the method smooths, and smoothed history understates VaR. "
+        "A random forest gets the same inputs as the linear proxy, so the "
+        "test isolates the model, not the features."
     )
     col = st.selectbox("series to evaluate", list(clean.columns), index=1,
                        key="evalcol")
-    table(evaluation.mask_and_recover(clean, col))
+    ev = evaluation.mask_and_recover(clean, col)
+    table(ev)
+    by_mae = ev["mae"].idxmin()
+    by_tail = ev["tail_ratio"].idxmax()
+    if by_mae == by_tail:
+        st.write(f"**On this series {by_mae} wins on both average error and "
+                 "tail preservation.**")
+    else:
+        st.write(f"**Rank by average error and you would ship {by_mae}. Rank "
+                 f"by tail preservation and you ship {by_tail}.** The metric "
+                 "you choose decides the model you deploy, and for risk data "
+                 "average accuracy is the wrong metric.")
+    st.write(
+        "No method reaches a tail ratio of 1: every fill flattens volatility "
+        "somewhat, which is why filled points stay flagged. Carry forward "
+        "scores exactly zero, and it is what the pipeline falls back to for "
+        "points it refuses to repair. A series with no correlated peers has "
+        "no proxy or forest row at all: a factor with no proxy is an "
+        "escalation, not a computation."
+    )
 
 with tabs[6]:
     st.subheader("What this is")
