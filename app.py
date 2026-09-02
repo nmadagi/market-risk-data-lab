@@ -82,16 +82,14 @@ def load_all(version: str):
     flagged = ml_detection.classify(corrupted, model)
     score_seconds = time.perf_counter() - t0
     findings = ml_detection.findings_from_model(flagged)
-    rules_findings = detection.run_all(corrupted)
     staged, flags, proposals, checks, unresolved = remediation.run(
         corrupted, findings)
     return (clean, corrupted, fault_log, findings, proposals, staged, flags,
-            checks, unresolved, flagged, rules_findings, train_seconds,
-            score_seconds)
+            checks, unresolved, flagged, train_seconds, score_seconds)
 
 
 (clean, corrupted, fault_log, findings, proposals, staged, flags, checks,
- unresolved, flagged, rules_findings, train_seconds, score_seconds) = load_all(
+ unresolved, flagged, train_seconds, score_seconds) = load_all(
     PIPELINE_VERSION)
 
 
@@ -110,27 +108,6 @@ def staleness_sweep(version: str):
                      "99% VaR": f"${v/1e6:,.2f}M",
                      "vs clean": f"{(v-base)/base*100:+.1f}%"})
     return pd.DataFrame(rows)
-
-
-@st.cache_data
-def cross_check(version: str):
-    """Rules and an Isolation Forest scored on the same planted faults."""
-    forest = ml_detection.isolation_forest_flags(corrupted)
-    if forest is None:
-        return None
-    mcard = ml_detection.classifier_scorecard(fault_log, flagged)
-    fcard = ml_detection.scorecard(fault_log, rules_findings, forest)
-    out = mcard[["planted fault", "series"]].copy()
-    out["trained model"] = [
-        "found and named" if n else ("found" if f else "missed")
-        for f, n in zip(mcard["model found it"], mcard["model named it correctly"])]
-    out["plain rules"] = fcard["rules found it"].map({True: "found", False: "missed"})
-    out["isolation forest"] = fcard["isolation forest found it"].map({True: "found", False: "missed"})
-    rule_spikes = rules_findings[rules_findings["type"] == "spike"]
-    fps = {"trained model": len(ml_detection.false_positives(fault_log, flagged)),
-           "plain rules": int((rule_spikes["series"] != "usd5y").sum()),
-           "isolation forest": len(ml_detection.false_positives(fault_log, forest))}
-    return out, fps
 
 
 var_clean = risk.var99(risk.pnl_vector(clean))
@@ -252,23 +229,6 @@ with tabs[1]:
     with st.expander(f"{len(held)} possible level shifts held for human review"):
         h = held.reset_index(drop=True).copy(); h["start"] = h["start"].dt.date
         table(h[["series", "start", "detail"]])
-    cc = cross_check(PIPELINE_VERSION)
-    if cc is not None:
-        card, fps = cc
-        with st.expander("Cross-check: the same faults through plain rules and an Isolation Forest"):
-            st.write(
-                "Three detectors on the same planted faults. Plain statistical "
-                "rules (run of identical prints, empty cell, move far outside "
-                "normal, with peer and next-day-reversal tiebreakers) also find "
-                "all three. An Isolation Forest, which has no labels and can "
-                "only rank days as unusual, does worse and puts its false "
-                "alarms in the 2022 stress era, because nothing ever told it "
-                "the difference between a crisis and a broken feed. The "
-                "trained model wins because the injector gave it labels."
-            )
-            table(card)
-            st.write("Flags outside any planted fault, over six years: " +
-                     ", ".join(f"{k} {v}" for k, v in fps.items()) + ".")
 
 with tabs[2]:
     st.subheader("Every finding gets one decision, and only accepted repairs "
