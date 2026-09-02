@@ -229,25 +229,30 @@ with tabs[1]:
         )
         table(card)
         n_found = int(card["isolation forest found it"].sum())
-        n_fp = len(ml_detection.false_positives(fault_log, ml_flags))
+        missed = card.loc[~card["isolation forest found it"], "planted fault"].tolist()
+        fp = ml_detection.false_positives(fault_log, ml_flags)
+        n_fp22 = int((fp["date"].dt.year == 2022).sum())
         st.write(
             f"**At a realistic alert budget ({len(ml_flags)} flags), the rules "
-            f"find 4 of 4 and the forest finds {n_found} of 4, with {n_fp} "
-            "false alarms, most of them in the 2022 stress era.** Give the "
-            "forest a bigger budget and it does find everything, at a price:"
+            f"find 4 of 4 and the forest finds {n_found} of 4, missing the "
+            f"{' and the '.join(missed)}, with {len(fp)} false alarms, "
+            f"{n_fp22} of them in the 2022 stress era.** Give the forest a "
+            "bigger budget and it does find everything, at a price:"
         )
         table(sweep)
         st.write(
             "Two lessons a market data team learns the hard way. First, an "
             "unsupervised model cannot tell a regime change from a data "
-            "error: in a stress era everything is unusual. Second, it "
-            "underweights sustained faults: to the forest, fourteen "
-            "identical prints look less exotic than one bad week in 2022. "
-            "The rules encode what a person already knows, that identical "
-            "prints mean a dead feed and a snap-back means a bad print. So "
-            "the design is rules first, with the forest as a second opinion "
-            "for combinations no rule was written for, and its weight is "
-            "earned on this scorecard, not assumed."
+            "error: in a stress era everything is unusual, so that is where "
+            "its false alarms go. Second, its answer depends on fitting "
+            "choices a rule does not have: changing from one joint model to "
+            "one per series changed which faults it caught at the same "
+            "budget, while the rules found all four both ways. The rules "
+            "encode what a person already knows, that identical prints mean "
+            "a dead feed and a snap-back means a bad print. So the design is "
+            "rules first, with the forest as a second opinion for "
+            "combinations no rule was written for, and its weight is earned "
+            "on this scorecard, not assumed."
         )
 
 with tabs[2]:

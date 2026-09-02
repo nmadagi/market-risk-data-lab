@@ -54,14 +54,16 @@ interpolating a real repricing destroys real history. In the demo, the
 Detection is three plain statistical rules plus two tiebreakers. An
 Isolation Forest runs alongside them on five scale-free features per
 series-day and is scored against the rules on the four planted faults.
-At a realistic alert budget the rules find 4 of 4; the forest finds the
-one-off spike, underweights the sustained faults, and puts most of its
-false alarms in the 2022 stress era. Given a bigger budget it finds
-everything, at the cost of roughly 170 false alarms. That is the honest
+At a realistic alert budget of about 30 flags the rules find 4 of 4 and
+the forest finds 2 of 4, with about half its false alarms in the 2022
+stress era. Given a budget of about 200 flags it finds everything, at the
+cost of roughly 170 false alarms. And which two it catches at the small
+budget changed when the fit changed from one joint model to one per
+series, while the rules found all four both ways. That is the honest
 shape of unsupervised anomaly detection on market data: it cannot tell a
-regime change from a data error, and the rules encode what a person
-already knows. The forest earns its weight on that scorecard, not by
-assumption.
+regime change from a data error, its answer depends on fitting choices a
+rule does not have, and the rules encode what a person already knows. The
+forest earns its weight on that scorecard, not by assumption.
 
 ## Which fill method to trust, and the metric that decides
 

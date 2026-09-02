@@ -412,13 +412,15 @@ def test_rules_find_every_planted_fault(forest):
     card = ml_detection.scorecard(fault_log, findings, flags)
     assert len(card) == 4 and card["rules found it"].all()
 
-def test_forest_finds_the_spike_but_not_everything_at_default_budget(forest):
-    """The honest result: an unsupervised model catches the one-off print
-    and underweights sustained faults at a sensible alert budget."""
+def test_forest_finds_some_but_not_all_at_default_budget(forest):
+    """The honest result: at a sensible alert budget the forest catches
+    some planted faults and misses others, and which ones it catches
+    changed when the fit changed (joint model vs per series). The rules
+    found all four both ways."""
     _, fault_log, findings, flags = forest
-    card = ml_detection.scorecard(fault_log, findings, flags).set_index("planted fault")
-    assert card.loc["spike", "isolation forest found it"]
-    assert card["isolation forest found it"].sum() < 4
+    card = ml_detection.scorecard(fault_log, findings, flags)
+    found = int(card["isolation forest found it"].sum())
+    assert 1 <= found < 4
 
 def test_forest_false_alarms_cluster_in_the_stress_era(forest):
     _, fault_log, _, flags = forest
