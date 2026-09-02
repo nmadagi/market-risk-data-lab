@@ -118,14 +118,14 @@ es_corrupt = risk.expected_shortfall(risk.pnl_vector(corrupted.ffill()))
 es_repaired = risk.expected_shortfall(risk.pnl_vector(staged))
 
 st.title("Market Risk Data Lab")
-st.caption(
+st.write(
     "One synthetic trading book, six risk factor series, three injected data "
     "faults. A trained model detects them, deterministic guardrails decide "
     "the repairs, and a benchmark proves the repairs. All data is synthetic "
     "and seeded; the portfolio is a toy book held as sensitivities. Nothing "
     "here claims production scale; the architecture is the point."
 )
-st.caption(
+st.write(
     "Pipeline, and the tabs in order: generate a clean history > inject "
     "faults > detect with a gradient boosting model trained on synthetic "
     "faults > propose repairs and score each one against deterministic "
