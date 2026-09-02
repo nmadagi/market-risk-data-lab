@@ -52,7 +52,7 @@ interpolating a real repricing destroys real history. In the demo, the
 ## Which fill method to trust, and the metric that decides
 
 A mask-and-recover harness hides observed points, rebuilds each outage the
-way the pipeline would, and scores four methods against the truth: carry
+way the pipeline would, and scores four methods against the clean data: carry
 forward, linear interpolation, an OLS regression on correlated peers, and
 a random forest on the same peer inputs. The forest gets identical
 features and identical anchoring, so the benchmark isolates the functional

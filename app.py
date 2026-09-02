@@ -119,18 +119,18 @@ c2.metric("Expected shortfall, same corrupted data",
           f"${es_corrupt/1e6:,.2f}M",
           f"{(es_corrupt-es_clean)/es_clean*100:+.1f}% vs clean")
 st.write(
-    f"Same book, same four data faults, two risk measures. VaR reads "
-    f"\\${var_corrupt/1e6:,.2f}M against a true \\${var_clean/1e6:,.2f}M and "
-    f"looks perfectly normal. Expected shortfall reads "
-    f"\\${es_corrupt/1e6:,.2f}M against a true \\${es_clean/1e6:,.2f}M. "
-    "The reason is structural: 99% VaR "
-    "is the 5th worst of 500 days, so one corrupt print moves the ranking by "
-    "a single place and the number shrugs. Expected shortfall averages the "
-    "worst days, so it absorbs the whole fake loss. Two consequences. You "
-    "cannot use the headline risk number to tell you your data broke, which "
-    "is the argument for dedicated monitoring. And as the industry shifts "
-    "from VaR toward expected shortfall, data quality gets more load bearing, "
-    "not less."
+    f"Same book, same four data faults, two risk measures. VaR on the "
+    f"corrupted data is \\${var_corrupt/1e6:,.2f}M. On the clean data it is "
+    f"\\${var_clean/1e6:,.2f}M. It barely noticed. Expected shortfall on the "
+    f"corrupted data is \\${es_corrupt/1e6:,.2f}M. On the clean data it is "
+    f"\\${es_clean/1e6:,.2f}M. Same bad data, one number shrugged and the "
+    "other one screamed. The reason is simple: 99% VaR is the 5th worst of "
+    "500 days, so one bad print becomes the new worst day and the 5th worst "
+    "barely changes. Expected shortfall is the average of the worst days, "
+    "so the fake loss goes straight into the average. Two consequences. "
+    "You cannot rely on the risk number to tell you your data broke, so "
+    "someone has to check the data itself. And as the industry shifts from "
+    "VaR toward expected shortfall, bad data gets more dangerous, not less."
 )
 st.write(
     f"After detection and repair: VaR \\${var_repaired/1e6:,.2f}M "
@@ -168,7 +168,7 @@ with tabs[0]:
         st.write("No faults were injected on this series, so the two lines "
                  "sit exactly on top of each other.")
     st.write(
-        "Grey is the clean truth drawn thick. Orange is the corrupted feed "
+        "Grey is the clean data drawn thick. Orange is the corrupted feed "
         "drawn thin on top. Where they agree you see orange inside grey. "
         "Where grey shows on its own, the feed is wrong there. Notice how "
         "normal the picture looks with eight percent of this history's "
@@ -341,8 +341,8 @@ with tabs[5]:
     st.subheader("Which fill method deserves trust, and the metric that decides")
     st.write(
         "Mask and recover: hide points that are actually known, rebuild each "
-        "outage the way the pipeline would, score against the truth. MAE is "
-        "average accuracy. tail_ratio is repaired volatility over true "
+        "outage the way the pipeline would, score against the clean data. MAE is "
+        "average accuracy. tail_ratio is repaired volatility over clean "
         "volatility, and it is the score that matters for risk: below 1 "
         "means the method smooths, and smoothed history understates VaR. "
         "A random forest gets the same inputs as the linear proxy, so the "

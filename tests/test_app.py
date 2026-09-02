@@ -42,10 +42,10 @@ def test_every_selectbox_option_renders(app):
 
 def test_dollar_amounts_are_not_mangled_into_math(app):
     """Streamlit treats $...$ in markdown as LaTeX; an unescaped pair turns
-    '$2.62M against a true $2.61M' into italic gibberish."""
+    '$2.62M. On the clean data it is $2.61M' into italic gibberish."""
     for md in app.markdown:
         body = md.value
-        if "against a true" in body:
+        if "On the clean data it is" in body:
             assert "\\$" in body
 
 
