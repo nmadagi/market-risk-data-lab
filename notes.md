@@ -108,3 +108,20 @@ detector could be ML.
   false alarms, about half of them in the 2022 stress era. Rules encode
   what a person knows; the forest has to rediscover it, and what it
   rediscovers depends on how it is fit.
+
+Supervised detector, added when asked whether any model could find all four.
+
+- The forest fails for lack of labels. The injector IS a label source:
+  make_world(seed) plants four random faults in a fresh synthetic history
+  and returns a per-day label. Twelve worlds, gradient boosting with
+  balanced class weights, the demo seed held out. Result on the held-out
+  world: stale, spike and gap found and named on every affected day,
+  8 false alarms in six years, all "splice" calls on 3 to 4 sigma moves.
+- The splice is not found, and that is a boundary rather than a bug. Its
+  only per-day signature is one non-reverting move, which is also what a
+  real repricing looks like. The classifier's false alarms are exactly
+  that confusion. Resolving it needs information outside the series (a
+  vendor notice), which is the job for an agent that reads documents.
+- The three detectors now sit in one table per planted fault: rules,
+  forest, classifier. Rules 4 of 4 flagged (splice held), classifier 3 of
+  4 named, forest 2 of 4 ranked.

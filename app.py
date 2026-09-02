@@ -3,6 +3,8 @@ detects it, repairs it under guardrails, and proves the repair.
 
 Read the tabs left to right; they are the pipeline in order.
 """
+import time
+
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -16,7 +18,7 @@ st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-02-isolation-forest-second-opinion"
+PIPELINE_VERSION = "2026-09-02-supervised-fault-classifier"
 
 
 def table(df):
@@ -68,15 +70,17 @@ def overlay(view: pd.DataFrame, height: int = 300):
 def load_all(version: str):
     clean = generate_market_data()
     corrupted, fault_log = apply_default_faults(clean)
+    t0 = time.perf_counter()
     findings = detection.run_all(corrupted)
+    rules_seconds = time.perf_counter() - t0
     staged, flags, proposals, checks, unresolved = remediation.run(
         corrupted, findings)
     return (clean, corrupted, fault_log, findings, proposals, staged, flags,
-            checks, unresolved)
+            checks, unresolved, rules_seconds)
 
 
 (clean, corrupted, fault_log, findings, proposals, staged, flags, checks,
- unresolved) = load_all(PIPELINE_VERSION)
+ unresolved, rules_seconds) = load_all(PIPELINE_VERSION)
 
 
 @st.cache_data
@@ -104,6 +108,25 @@ def ml_second_opinion(version: str):
     card = ml_detection.scorecard(fault_log, findings, flags)
     sweep = ml_detection.budget_sweep(corrupted, fault_log, findings)
     return flags, card, sweep
+
+
+@st.cache_resource
+def trained_model(version: str):
+    t0 = time.perf_counter()
+    model = ml_detection.train_classifier()
+    return model, time.perf_counter() - t0
+
+
+@st.cache_data
+def model_verdict(version: str):
+    model, train_seconds = trained_model(version)
+    if model is None:
+        return None, None, None, None
+    t0 = time.perf_counter()
+    flagged = ml_detection.classify(corrupted, model)
+    score_seconds = time.perf_counter() - t0
+    card = ml_detection.classifier_scorecard(fault_log, flagged)
+    return flagged, card, train_seconds, score_seconds
 
 
 var_clean = risk.var99(risk.pnl_vector(clean))
@@ -188,27 +211,33 @@ with tabs[0]:
     chart(overlay(view.loc[lo:hi]))
 
 with tabs[1]:
-    st.subheader("Finding the breaks with statistics, no model needed yet")
+    st.subheader("One pass over six years: six findings")
     n_stale = int((findings["type"] == "stale").sum())
     n_gap = int((findings["type"] == "gap").sum())
     spikes = findings[findings["type"] == "spike"]
     n_err = int((spikes["verdict"] == detection.VERDICT_ERROR).sum())
     n_real = int((spikes["verdict"] == detection.VERDICT_REAL).sum())
     n_held = int((spikes["verdict"] == detection.VERDICT_BREAK).sum())
+    a, b, c_, d_ = st.columns(4)
+    a.metric("series-days scanned", f"{corrupted.size:,}")
+    b.metric("years of history", f"{(corrupted.index[-1] - corrupted.index[0]).days / 365.25:.1f}")
+    c_.metric("run time", f"{rules_seconds:.2f}s")
+    d_.metric("findings", len(findings), f"{len(fault_log)} planted faults, all found")
     st.write(
         f"**{len(findings)} findings:** {n_stale} stale feed, {n_gap} gap, "
         f"{len(spikes)} big moves. Of the big moves, {n_err} look like data "
         f"errors, {n_real} are confirmed real by correlated series, and "
-        f"{n_held} are level breaks held for a human."
+        f"{n_held} are level breaks held for a human. Zero real moves were "
+        "repaired away."
     )
     st.write(
-        "Three detectors: a run of identical prints (stale), a move far "
-        "outside the series' own recent volatility (spike), missing days "
-        "(gap). A big move alone is not proof of an error, so each spike "
-        "gets two tiebreakers. Did correlated series move too? Then it is "
-        "real. Was it undone the next day? Then it was a bad print. Neither? "
-        "Then it is a level break, and it is held rather than repaired, "
-        "because interpolating a real repricing destroys real history."
+        "Three statistical rules: a run of identical prints (stale), a move "
+        "far outside the series' own recent volatility (spike), missing days "
+        "(gap). A big move alone is not proof of an error, so each spike gets "
+        "two tiebreakers. Did correlated series move too? Then it is real. "
+        "Was it undone the next day? Then it was a bad print. Neither? Then "
+        "it is a level break, and it is held rather than repaired, because "
+        "interpolating a real repricing destroys real history."
     )
     show = findings.copy()
     show["start"] = show["start"].dt.date
@@ -216,44 +245,57 @@ with tabs[1]:
     table(show[["series", "type", "start", "length", "detail", "verdict"]]
           .rename(columns={"length": "days", "verdict": "decision"}))
 
-    st.subheader("A second opinion from machine learning, scored honestly")
-    ml_flags, card, sweep = ml_second_opinion(PIPELINE_VERSION)
-    if card is not None:
+    st.subheader("A model that learned the faults: the injector is the teacher")
+    flagged, mcard, train_s, score_s = model_verdict(PIPELINE_VERSION)
+    ml_flags, fcard, sweep = ml_second_opinion(PIPELINE_VERSION)
+    if mcard is not None and fcard is not None:
         st.write(
-            "An Isolation Forest scores every series-day on five features at "
-            "once (size of the move, whether it snapped back, whether peers "
-            "moved, how long the value has been frozen, whether it is "
-            "missing) and flags the most unusual. Because the demo has an "
-            "answer key, the forest can be scored against the rules on the "
-            "exact faults that were planted."
+            "An unsupervised model can only rank days as unusual. But the "
+            "fault injector can manufacture unlimited labeled faults, so a "
+            "classifier was trained on twelve synthetic histories full of "
+            "planted stale runs, spikes, gaps and splices, then tested on "
+            "this history, which it never saw. Every series-day gets a "
+            "class: normal, stale, spike, gap or splice."
         )
-        table(card)
-        n_found = int(card["isolation forest found it"].sum())
-        missed = card.loc[~card["isolation forest found it"], "planted fault"].tolist()
-        fp = ml_detection.false_positives(fault_log, ml_flags)
-        n_fp22 = int((fp["date"].dt.year == 2022).sum())
+        m_fp = ml_detection.false_positives(fault_log, flagged)
+        f_fp = ml_detection.false_positives(fault_log, ml_flags)
+        combined = mcard[["planted fault", "series"]].copy()
+        combined["rules"] = fcard["rules found it"].map({True: "found", False: "missed"})
+        combined["isolation forest (no labels)"] = fcard["isolation forest found it"].map({True: "found", False: "missed"})
+        combined["trained classifier"] = [
+            ("found and named" if n else ("found" if f else "missed"))
+            for f, n in zip(mcard["model found it"], mcard["model named it correctly"])]
+        table(combined)
+        e1, e2, e3 = st.columns(3)
+        e1.metric("trained on 12 worlds in", f"{train_s:.1f}s")
+        e2.metric("scored this world in", f"{score_s:.2f}s")
+        e3.metric("false alarms in six years", len(m_fp),
+                  f"forest: {len(f_fp)}, rules: 0", delta_color="off")
+        n_named = int(mcard["model named it correctly"].sum())
         st.write(
-            f"**At a realistic alert budget ({len(ml_flags)} flags), the rules "
-            f"find 4 of 4 and the forest finds {n_found} of 4, missing the "
-            f"{' and the '.join(missed)}, with {len(fp)} false alarms, "
-            f"{n_fp22} of them in the 2022 stress era.** Give the forest a "
-            "bigger budget and it does find everything, at a price:"
+            f"**The classifier finds and correctly names {n_named} of the "
+            f"{len(fault_log)} faults, with {len(m_fp)} false alarms across "
+            "six years, every one of them a possible level shift called on a "
+            "three to four sigma move.** The one it cannot resolve is the "
+            "vendor splice, and no per-series model can: a permanent level "
+            "shift looks exactly like a real repricing from inside the "
+            "numbers. That is why the rules hold it as a level break for a "
+            "human, and in production it is where an agent reading vendor "
+            "change notices earns its place: the answer is in a document, "
+            "not in the series."
         )
-        table(sweep)
-        st.write(
-            "Two lessons a market data team learns the hard way. First, an "
-            "unsupervised model cannot tell a regime change from a data "
-            "error: in a stress era everything is unusual, so that is where "
-            "its false alarms go. Second, its answer depends on fitting "
-            "choices a rule does not have: changing from one joint model to "
-            "one per series changed which faults it caught at the same "
-            "budget, while the rules found all four both ways. The rules "
-            "encode what a person already knows, that identical prints mean "
-            "a dead feed and a snap-back means a bad print. So the design is "
-            "rules first, with the forest as a second opinion for "
-            "combinations no rule was written for, and its weight is earned "
-            "on this scorecard, not assumed."
-        )
+        with st.expander("Why the unsupervised forest is only a second opinion"):
+            st.write(
+                f"At a realistic alert budget ({len(ml_flags)} flags) the "
+                f"Isolation Forest finds {int(fcard['isolation forest found it'].sum())} "
+                f"of 4 with {len(f_fp)} false alarms, about half of them in the "
+                "2022 stress era, and which faults it catches changed when "
+                "the fit changed from one joint model to one per series. It "
+                "cannot tell a regime change from a data error because "
+                "nothing ever told it the difference. Give it a bigger budget "
+                "and it finds everything, at a price:"
+            )
+            table(sweep)
 
 with tabs[2]:
     st.subheader("Every finding gets one decision, and only accepted repairs "

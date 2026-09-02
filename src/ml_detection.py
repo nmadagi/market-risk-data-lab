@@ -136,3 +136,100 @@ def false_positives(fault_log: pd.DataFrame, ml_flags: pd.DataFrame) -> pd.DataF
         inside = (ml_flags["series"] == f.series) & (ml_flags["date"] >= lo) & (ml_flags["date"] <= hi)
         mask &= ~inside
     return ml_flags[mask]
+
+
+# ---------------------------------------------------------------------------
+# Supervised detector: the fault injector is the teacher.
+#
+# An Isolation Forest has no labels, so it can only rank "unusual". But the
+# injector can manufacture unlimited LABELED faults in unlimited synthetic
+# histories. Train a classifier on many worlds full of planted faults, then
+# test it on the demo world it has never seen. Every day gets a class:
+# normal, stale, spike, gap, or splice.
+# ---------------------------------------------------------------------------
+from data.generate import generate_market_data
+from src.corruption import inject_gap, inject_spike, inject_splice, inject_stale
+
+CLASSES = ["normal", "stale", "spike", "gap", "splice"]
+TRAIN_SEEDS = tuple(range(1000, 1012))     # twelve synthetic worlds
+TEST_SEED = 42                             # the demo world, never trained on
+
+
+def make_world(seed: int):
+    """One synthetic history with four random faults and a per-day label."""
+    rng = np.random.default_rng(seed)
+    clean = generate_market_data(seed)
+    cols = list(clean.columns)
+    dates = clean.index
+    lo, hi = 300, len(dates) - 40          # leave warmup and a tail
+    labels = pd.DataFrame("normal", index=dates, columns=cols)
+    out = clean
+    chosen = rng.choice(cols, size=4, replace=False)
+
+    s = chosen[0]; start = dates[rng.integers(lo, hi - 30)]; n = int(rng.integers(5, 25))
+    out, _ = inject_stale(out, s, start, n)
+    frozen = out.loc[start:].index[1:n]
+    labels.loc[frozen, s] = "stale"
+
+    s = chosen[1]; d = dates[rng.integers(lo, hi)]
+    out, _ = inject_spike(out, s, d, n_sigma=float(rng.uniform(5, 10)))
+    labels.loc[d, s] = "spike"
+
+    s = chosen[2]; start = dates[rng.integers(lo, hi - 35)]; n = int(rng.integers(5, 30))
+    out, _ = inject_gap(out, s, start, n)
+    labels.loc[out.index[out[s].isna()], s] = "gap"
+
+    s = chosen[3]; seam = dates[rng.integers(lo, hi)]
+    shift = float(rng.uniform(4, 8) * clean[s].diff().std() * rng.choice([-1, 1]))
+    out, _ = inject_splice(out, s, seam, shift)
+    after = out.loc[seam:].index[1]      # the first day the level shift is visible
+    labels.loc[after, s] = "splice"
+    return out, labels
+
+
+def labeled_features(seed: int) -> pd.DataFrame:
+    corrupted, labels = make_world(seed)
+    feats = build_features(corrupted)
+    long = labels.rename_axis("date").reset_index().melt(
+        id_vars="date", var_name="series", value_name="label")
+    return feats.merge(long, on=["date", "series"], how="left")
+
+
+def train_classifier(seeds=TRAIN_SEEDS):
+    """Gradient boosting on every series-day of every training world."""
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+    except ImportError:
+        return None
+    data = pd.concat([labeled_features(s) for s in seeds], ignore_index=True)
+    X = data[FEATURES].to_numpy()
+    y = data["label"].to_numpy()
+    model = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.08,
+                                           class_weight="balanced",
+                                           random_state=0)
+    model.fit(X, y)
+    return model
+
+
+def classify(df: pd.DataFrame, model) -> pd.DataFrame:
+    """Flag every series-day the model does not call normal."""
+    feats = build_features(df)
+    feats["predicted"] = model.predict(feats[FEATURES].to_numpy())
+    proba = model.predict_proba(feats[FEATURES].to_numpy())
+    feats["confidence"] = proba.max(axis=1).round(3)
+    return feats[feats["predicted"] != "normal"].sort_values("date")
+
+
+def classifier_scorecard(fault_log: pd.DataFrame, flagged: pd.DataFrame) -> pd.DataFrame:
+    """For each planted fault: found, and found with the right name?"""
+    rows = []
+    for f in fault_log.itertuples():
+        lo = f.end if f.fault == "splice" else f.start
+        hi = f.end + pd.Timedelta(days=3)
+        hits = flagged[(flagged["series"] == f.series) &
+                       (flagged["date"] >= lo) & (flagged["date"] <= hi)]
+        rows.append({"planted fault": f.fault, "series": f.series,
+                     "model found it": len(hits) > 0,
+                     "model named it correctly": bool((hits["predicted"] == f.fault).any()),
+                     "days flagged in window": len(hits)})
+    return pd.DataFrame(rows)

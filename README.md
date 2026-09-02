@@ -49,7 +49,24 @@ with neither is a level break and is held for a human, because
 interpolating a real repricing destroys real history. In the demo, the
 2022 stress onset and the vendor splice seam are both held, not repaired.
 
-## Rules first, machine learning as a scored second opinion
+## A model that learned the faults: the injector is the teacher
+
+An unsupervised model can only rank days as unusual. But the fault
+injector can manufacture unlimited labeled faults, so a gradient boosting
+classifier is trained on twelve synthetic histories full of planted stale
+runs, spikes, gaps and splices, then tested on the demo history, which it
+never saw. It finds and correctly names the stale run (all 14 days), the
+spike, and the gap (all 20 days), with 8 false alarms in six years, every
+one a possible level shift called on a three to four sigma move. Trained
+in under two seconds, scores a world in a few hundredths of a second.
+
+The one fault it cannot resolve is the vendor splice, and no per-series
+model can: a permanent level shift looks exactly like a real repricing
+from inside the numbers. The rules hold it as a level break for a human.
+In production that is where an agent reading vendor change notices earns
+its place: the answer is in a document, not in the series.
+
+## Why the unsupervised forest is only a second opinion
 
 Detection is three plain statistical rules plus two tiebreakers. An
 Isolation Forest runs alongside them on five scale-free features per
@@ -117,8 +134,9 @@ which is exactly the failure that guardrail exists to catch.
 | Mask-and-recover evaluation (MAE, KS, tail preservation) | src/evaluation.py |
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
 | Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
+| Supervised fault classifier trained on synthetic worlds, tested on a held-out world | src/ml_detection.py |
 | Isolation Forest anomaly detection scored against the rules | src/ml_detection.py |
-| 65 tests, including a headless run of the app through every tab and widget | tests/ |
+| 70 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
 

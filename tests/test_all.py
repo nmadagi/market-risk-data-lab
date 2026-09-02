@@ -441,3 +441,49 @@ def test_features_are_scale_free_and_complete(scenario):
     assert set(ml_detection.FEATURES) <= set(feats.columns)
     assert not feats[ml_detection.FEATURES].isna().any().any()
     assert feats["missing"].sum() == 20
+
+
+# ---------------- supervised classifier ----------------
+
+@pytest.fixture(scope="module")
+def classifier(scenario):
+    corrupted, fault_log, *_ = scenario
+    model = ml_detection.train_classifier()
+    flagged = ml_detection.classify(corrupted, model)
+    return fault_log, flagged
+
+def test_training_worlds_are_labeled_and_never_include_the_demo_seed():
+    assert ml_detection.TEST_SEED not in ml_detection.TRAIN_SEEDS
+    lf = ml_detection.labeled_features(ml_detection.TRAIN_SEEDS[0])
+    assert set(lf["label"].unique()) == set(ml_detection.CLASSES)
+
+def test_classifier_finds_and_names_stale_spike_and_gap(classifier):
+    """Held-out world. The three faults with a distinctive per-day
+    signature are found and named; the splice is not, see next test."""
+    fault_log, flagged = classifier
+    card = ml_detection.classifier_scorecard(fault_log, flagged).set_index("planted fault")
+    for f in ("stale", "spike", "gap"):
+        assert card.loc[f, "model found it"] and card.loc[f, "model named it correctly"], f
+
+def test_splice_is_the_fault_no_per_series_model_resolves(classifier):
+    """A permanent level shift looks like a real repricing from inside the
+    numbers. Honest boundary: it needs a vendor notice, not a model."""
+    fault_log, flagged = classifier
+    card = ml_detection.classifier_scorecard(fault_log, flagged).set_index("planted fault")
+    assert not card.loc["splice", "model named it correctly"]
+
+def test_classifier_false_alarms_are_few(classifier):
+    fault_log, flagged = classifier
+    fp = ml_detection.false_positives(fault_log, flagged)
+    assert len(fp) <= 15
+    assert (fp["predicted"] == "splice").all()
+
+def test_classifier_beats_forest_on_the_planted_faults(scenario, classifier):
+    corrupted, fault_log, findings, *_ = scenario
+    _, flagged = classifier
+    forest = ml_detection.isolation_forest_flags(corrupted)
+    f_found = int(ml_detection.scorecard(fault_log, findings, forest)["isolation forest found it"].sum())
+    m_found = int(ml_detection.classifier_scorecard(fault_log, flagged)["model found it"].sum())
+    assert m_found > f_found
+    assert len(ml_detection.false_positives(fault_log, flagged)) < \
+        len(ml_detection.false_positives(fault_log, forest))
