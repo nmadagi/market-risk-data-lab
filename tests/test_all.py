@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from data.generate import generate_market_data
-from src import agent, detection, evaluation, remediation, risk
+from src import agent, detection, evaluation, ml_detection, remediation, risk
 from src.corruption import (apply_default_faults, inject_gap, inject_spike,
                             inject_stale, inject_splice)
 
@@ -397,3 +397,45 @@ def test_masked_blocks_are_filled_one_outage_at_a_time(clean):
     out = evaluation.mask_and_recover(clean, "usd5y")
     assert out["tail_ratio"].max() < 2.0
     assert out["mae"].max() < 0.5
+
+
+# ---------------- isolation forest second opinion ----------------
+
+@pytest.fixture(scope="module")
+def forest(scenario):
+    corrupted, fault_log, findings, *_ = scenario
+    flags = ml_detection.isolation_forest_flags(corrupted)
+    return corrupted, fault_log, findings, flags
+
+def test_rules_find_every_planted_fault(forest):
+    _, fault_log, findings, flags = forest
+    card = ml_detection.scorecard(fault_log, findings, flags)
+    assert len(card) == 4 and card["rules found it"].all()
+
+def test_forest_finds_the_spike_but_not_everything_at_default_budget(forest):
+    """The honest result: an unsupervised model catches the one-off print
+    and underweights sustained faults at a sensible alert budget."""
+    _, fault_log, findings, flags = forest
+    card = ml_detection.scorecard(fault_log, findings, flags).set_index("planted fault")
+    assert card.loc["spike", "isolation forest found it"]
+    assert card["isolation forest found it"].sum() < 4
+
+def test_forest_false_alarms_cluster_in_the_stress_era(forest):
+    _, fault_log, _, flags = forest
+    fp = ml_detection.false_positives(fault_log, flags)
+    assert len(fp) > 0
+    assert (fp["date"].dt.year == 2022).mean() >= 0.4
+
+def test_bigger_budget_finds_more_faults_at_more_false_alarms(forest):
+    corrupted, fault_log, findings, _ = forest
+    sweep = ml_detection.budget_sweep(corrupted, fault_log, findings)
+    found = sweep["planted faults found"].str.split(" of ").str[0].astype(int)
+    assert found.is_monotonic_increasing and found.iloc[-1] == 4
+    assert sweep["false alarms"].is_monotonic_increasing
+
+def test_features_are_scale_free_and_complete(scenario):
+    corrupted, *_ = scenario
+    feats = ml_detection.build_features(corrupted)
+    assert set(ml_detection.FEATURES) <= set(feats.columns)
+    assert not feats[ml_detection.FEATURES].isna().any().any()
+    assert feats["missing"].sum() == 20

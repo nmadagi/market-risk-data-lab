@@ -49,6 +49,20 @@ with neither is a level break and is held for a human, because
 interpolating a real repricing destroys real history. In the demo, the
 2022 stress onset and the vendor splice seam are both held, not repaired.
 
+## Rules first, machine learning as a scored second opinion
+
+Detection is three plain statistical rules plus two tiebreakers. An
+Isolation Forest runs alongside them on five scale-free features per
+series-day and is scored against the rules on the four planted faults.
+At a realistic alert budget the rules find 4 of 4; the forest finds the
+one-off spike, underweights the sustained faults, and puts most of its
+false alarms in the 2022 stress era. Given a bigger budget it finds
+everything, at the cost of roughly 170 false alarms. That is the honest
+shape of unsupervised anomaly detection on market data: it cannot tell a
+regime change from a data error, and the rules encode what a person
+already knows. The forest earns its weight on that scorecard, not by
+assumption.
+
 ## Which fill method to trust, and the metric that decides
 
 A mask-and-recover harness hides observed points, rebuilds each outage the
@@ -101,7 +115,8 @@ which is exactly the failure that guardrail exists to catch.
 | Mask-and-recover evaluation (MAE, KS, tail preservation) | src/evaluation.py |
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
 | Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
-| 60 tests, including a headless run of the app through every tab and widget | tests/ |
+| Isolation Forest anomaly detection scored against the rules | src/ml_detection.py |
+| 65 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
 

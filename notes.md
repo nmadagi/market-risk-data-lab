@@ -95,3 +95,17 @@ Second QC round, prompted by a fair question: is any of this ML?
 - The forest was refitting for each of 27 outage blocks, 15 seconds per
   series. Now it fits once and applies everywhere: 0.9 seconds, same
   numbers, and it is also the correct methodology.
+
+Isolation Forest as a second opinion, added when asked whether the
+detector could be ML.
+
+- It can, and the honest answer is that it should not be the first line.
+  Per series, five scale-free features, scored against the planted faults.
+  At ~30 flags it finds the spike and misses the stale run, the gap and
+  the splice seam; its false alarms sit mostly in the 2022 stress era. At
+  ~200 flags it finds all four with ~170 false alarms. The frozen feed
+  ranks 129th most unusual: to an unsupervised model, identical prints are
+  less exotic than a bad week. Rules encode what a person knows; the
+  forest has to rediscover it from data it does not have.
+- One model across all series let the loudest series set the bar for the
+  rest. Per-series fitting doubled recall at the same budget.

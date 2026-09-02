@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from data.generate import generate_market_data
-from src import agent, detection, evaluation, remediation, risk
+from src import agent, detection, evaluation, ml_detection, remediation, risk
 from src.corruption import apply_default_faults, inject_stale
 
 st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
@@ -16,7 +16,7 @@ st.set_page_config(page_title="Market Risk Data Lab", layout="wide")
 # Streamlit hashes a cached function's OWN source, not the source of what it
 # calls. Changing the generator or the repair logic therefore leaves a stale
 # cached result behind. Bumping this string is what actually invalidates it.
-PIPELINE_VERSION = "2026-09-01-unresolved-and-ml-benchmark"
+PIPELINE_VERSION = "2026-09-02-isolation-forest-second-opinion"
 
 
 def table(df):
@@ -94,6 +94,16 @@ def staleness_sweep(version: str):
                      "99% VaR": f"${v/1e6:,.2f}M",
                      "vs clean": f"{(v-base)/base*100:+.1f}%"})
     return pd.DataFrame(rows)
+
+
+@st.cache_data
+def ml_second_opinion(version: str):
+    flags = ml_detection.isolation_forest_flags(corrupted)
+    if flags is None:
+        return None, None, None
+    card = ml_detection.scorecard(fault_log, findings, flags)
+    sweep = ml_detection.budget_sweep(corrupted, fault_log, findings)
+    return flags, card, sweep
 
 
 var_clean = risk.var99(risk.pnl_vector(clean))
@@ -205,6 +215,40 @@ with tabs[1]:
     show["verdict"] = show["verdict"].fillna("data fault, repair proposed")
     table(show[["series", "type", "start", "length", "detail", "verdict"]]
           .rename(columns={"length": "days", "verdict": "decision"}))
+
+    st.subheader("A second opinion from machine learning, scored honestly")
+    ml_flags, card, sweep = ml_second_opinion(PIPELINE_VERSION)
+    if card is not None:
+        st.write(
+            "An Isolation Forest scores every series-day on five features at "
+            "once (size of the move, whether it snapped back, whether peers "
+            "moved, how long the value has been frozen, whether it is "
+            "missing) and flags the most unusual. Because the demo has an "
+            "answer key, the forest can be scored against the rules on the "
+            "exact faults that were planted."
+        )
+        table(card)
+        n_found = int(card["isolation forest found it"].sum())
+        n_fp = len(ml_detection.false_positives(fault_log, ml_flags))
+        st.write(
+            f"**At a realistic alert budget ({len(ml_flags)} flags), the rules "
+            f"find 4 of 4 and the forest finds {n_found} of 4, with {n_fp} "
+            "false alarms, most of them in the 2022 stress era.** Give the "
+            "forest a bigger budget and it does find everything, at a price:"
+        )
+        table(sweep)
+        st.write(
+            "Two lessons a market data team learns the hard way. First, an "
+            "unsupervised model cannot tell a regime change from a data "
+            "error: in a stress era everything is unusual. Second, it "
+            "underweights sustained faults: to the forest, fourteen "
+            "identical prints look less exotic than one bad week in 2022. "
+            "The rules encode what a person already knows, that identical "
+            "prints mean a dead feed and a snap-back means a bad print. So "
+            "the design is rules first, with the forest as a second opinion "
+            "for combinations no rule was written for, and its weight is "
+            "earned on this scorecard, not assumed."
+        )
 
 with tabs[2]:
     st.subheader("Every finding gets one decision, and only accepted repairs "
