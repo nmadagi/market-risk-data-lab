@@ -180,3 +180,11 @@ modules. The log showed why: "inotify instance limit reached", after which
 the file watcher was dead. .streamlit/config.toml now sets
 fileWatcherType = "poll", which uses no inotify handles. If it ever
 happens again the fix is Manage app > Reboot app.
+
+Stress scenarios dropped from the app. The scenario table sat at the
+bottom of the sensitivities tab and was the least load bearing thing on
+screen: three designed shocks priced off the same linear sensitivities
+already shown above it. The engine, the scenario definitions and their
+test stay in src/risk.py, because a stress framework belongs in a risk
+stack; only the tab stops spending a viewer's attention on it. Tab 4 is
+now sensitivities alone.

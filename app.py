@@ -142,8 +142,8 @@ st.write(
     "faults > detect with a gradient boosting model trained on synthetic "
     "faults > propose repairs and score each one against deterministic "
     "guardrails, applying only what passes > run the risk engine "
-    "(historical simulation VaR, stressed VaR, sensitivities, stress "
-    "scenarios, backtesting) on the repaired data."
+    "(historical simulation VaR, stressed VaR, sensitivities, "
+    "backtesting) on the repaired data."
 )
 
 st.subheader("The finding: your risk number is not a data alarm")
@@ -176,7 +176,7 @@ st.write(
 )
 
 tabs = st.tabs(["1 Data health", "2 Find and fix",
-                "3 VaR and sVaR", "4 Sensitivities and stress"])
+                "3 VaR and sVaR", "4 Sensitivities"])
 
 with tabs[0]:
     st.subheader("Six risk factor series, three injected faults")
@@ -393,11 +393,3 @@ with tabs[3]:
         return f"{what}: book {verb} ${abs(pnl):,.0f}"
     sens["in plain English"] = sens.apply(plain, axis=1)
     table(sens)
-    st.subheader("Stress scenarios: designed shocks, several factors at once")
-    st.write(
-        "No probabilities: each scenario says 'if this happens, here is the "
-        "damage'. The craft is coherence, moving the factors together the "
-        "way a real event would. Not every scenario is a loss; the point of "
-        "several is finding which direction hurts."
-    )
-    table(risk.stress_pnl().rename(columns={"pnl_musd": "P&L ($M)"}))

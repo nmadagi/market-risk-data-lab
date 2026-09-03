@@ -80,7 +80,7 @@ stay on an exception report until a person picks a proxy series.
 | Fault injection: stale, spike, gap (vendor splice used in training worlds) | src/corruption.py |
 | Anomaly detection: run-length, EWMA z-score, calendar, peer and reversal tiebreakers | src/detection.py |
 | Remediation ladder, per-proposal KS and VaR-impact guardrails, accepted-only staging, flags | src/remediation.py |
-| Historical simulation VaR, sVaR window search, ES, sensitivities, stress scenarios, backtesting | src/risk.py |
+| Historical simulation VaR, sVaR window search, ES, sensitivities, coherent stress scenarios, backtesting | src/risk.py |
 | Mask-and-recover evaluation (MAE, KS, tail preservation) | src/evaluation.py |
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
 | Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
