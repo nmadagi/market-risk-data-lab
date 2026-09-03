@@ -82,8 +82,21 @@ def load_all(version: str):
     flagged = ml_detection.classify(corrupted, model)
     score_seconds = time.perf_counter() - t0
     findings = ml_detection.findings_from_model(flagged)
+    def reviewer(proposal):
+        """Stands in for the person who signs off single-day repairs.
+
+        This demo has an answer key, so the stand-in simply asks whether
+        the flagged day is one of the planted faults. A real reviewer
+        would look at the chart, the vendor feed and any change notice.
+        Its verdicts are shown on screen so you can see what the model got
+        wrong and the person caught.
+        """
+        return bool(((fault_log["series"] == proposal["series"]) &
+                     (fault_log["start"] <= proposal["dates"][-1]) &
+                     (fault_log["end"] >= proposal["dates"][0])).any())
+
     staged, flags, proposals, checks, unresolved = remediation.run(
-        corrupted, findings)
+        corrupted, findings, reviewer=reviewer)
     return (clean, corrupted, fault_log, findings, proposals, staged, flags,
             checks, unresolved, flagged, score_seconds)
 
@@ -235,46 +248,70 @@ with tabs[1]:
           .rename(columns={"length": "days"}))
 
     st.subheader("Fix: every fault gets one decision, and only accepted repairs touch the data")
-    n_acc = sum(c["accepted"] for c in checks)
-    n_rev = sum(c["needs_review"] for c in checks)
-    n_rej = len(checks) - n_acc - n_rev
+    n_auto = sum(c["accepted"] and not c["needs_review"] for c in checks)
+    n_ok = sum(bool(c.get("approved_at_review")) for c in checks)
+    n_no = sum(c["needs_review"] and not bool(c.get("approved_at_review"))
+               for c in checks)
+    n_rej = sum(not c["accepted"] and not c["needs_review"] for c in checks)
     a, b, c_, d_ = st.columns(4)
-    a.metric("repairs applied", n_acc)
-    b.metric("sent to human review", n_rev)
-    c_.metric("rejected by guardrail", n_rej)
-    d_.metric("possible level shifts held", len(held))
+    a.metric("repaired automatically", n_auto)
+    b.metric("approved at review", n_ok)
+    c_.metric("rejected at review", n_no, "real market moves, not faults",
+              delta_color="off")
+    d_.metric("rejected by guardrail", n_rej)
     st.write(
         "How: short problems are interpolated, long stretches are rebuilt "
-        "from correlated series in change space. Each proposal is scored "
-        "alone against two deterministic guardrails: does the repaired "
-        "stretch keep the series' own return distribution (KS test), and "
-        "does the repair move VaR materially (routes to a human). Only "
-        "accepted repairs reach the staging copy; the golden copy is never "
-        "edited in place. The model proposes, the controls dispose."
+        "from correlated series in change space. Repairs are scored in date "
+        "order against the data as it stands, so each one is judged after "
+        "the repairs already accepted before it. A repair that changes the "
+        "series' own return distribution is rejected outright. Everything "
+        "else is applied, but a repair covering a single day is signed off "
+        "by a person first, because a one-day call is where the detector is "
+        "weakest and where an automatic fix is most likely to smooth away a "
+        "real market move. The golden copy is never edited in place: the "
+        "model proposes, the controls dispose."
     )
     rows = []
     for p_, c in zip(proposals, checks):
-        if c["accepted"]:
-            decision, why = "applied", "passed both guardrails"
+        if c["needs_review"] and not bool(c.get("approved_at_review")):
+            decision = "rejected at review"
+            why = "a person judged this a real market move, not a fault"
+        elif not c["accepted"]:
+            decision = "rejected by guardrail"
+            why = f"distribution changed (KS p = {c['ks_pvalue']})"
         elif c["needs_review"]:
-            decision, why = "human review", f"VaR impact {c['var_impact_pct']}% is material"
+            decision = "applied after review"
+            why = ("single day call, model is weakest here"
+                   if c["points"] < remediation.MIN_AUTO_DAYS
+                   else f"VaR impact {c['var_impact_pct']}% is material")
         else:
-            decision, why = "rejected", f"distribution changed (KS p = {c['ks_pvalue']})"
+            decision, why = "applied automatically", "passed both guardrails"
         rows.append({"series": p_["series"], "issue": p_["type"],
                      "days": len(p_["dates"]), "fix": p_["method"],
                      "KS p": c["ks_pvalue"], "VaR impact %": c["var_impact_pct"],
                      "decision": decision, "reason": why})
     table(pd.DataFrame(rows))
-    if n_rej:
+    rejected = [r for r in rows if r["decision"] == "rejected by guardrail"]
+    if rejected:
         st.write(
-            f"The rejected one is worth a look: a {rows[[r['decision'] for r in rows].index('rejected')]['days']} "
-            "day straight line fill has no volatility, and a guardrail that "
-            "compares return distributions catches exactly that. The "
-            f"{len(unresolved)} points it would have filled stay on the "
-            "exception report, carried forward as a stopgap and clearly "
-            "labeled, until a person picks a proxy. The pipeline never fills "
-            "silently."
+            f"The one rejected by a guardrail is worth a look: a "
+            f"{rejected[0]['days']} day straight line fill has no volatility, "
+            "and a check that compares return distributions catches exactly "
+            f"that. The {len(unresolved)} points it would have filled stay on "
+            "the exception report, carried forward as a stopgap and clearly "
+            "labeled, until a person picks a proxy series."
         )
+    if n_no:
+        st.write(
+            f"And {n_no} of the {n_ok + n_no} single-day repairs sent for "
+            "sign-off were rejected by the reviewer: they are real market "
+            "moves from the 2022 stress era, not faults. That is the whole "
+            "case for not letting a model repair one-day events on its own, "
+            "and it is measurable here because the answer key exists. The "
+            "review stand-in consults it; a person would look at the chart "
+            "and any vendor notice."
+        )
+
     with st.expander(f"{len(held)} possible level shift{'s' if len(held) != 1 else ''} held for human review"):
         h = held.reset_index(drop=True).copy(); h["start"] = h["start"].dt.date
         table(h[["series", "start", "detail"]])

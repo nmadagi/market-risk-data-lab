@@ -21,43 +21,55 @@ draft containing a figure not present in the computed facts.
 I built this expecting to show that bad data visibly distorts VaR. It
 mostly does not, and that turned out to be the more useful result.
 
-With all three faults injected, 99% VaR moves +0.1% and looks completely
-normal. Expected shortfall on the same data moves +56%. The reason is
+With the three faults injected, 99% VaR moves +0.2% and looks completely
+normal. Expected shortfall on the same data moves +71%. The reason is
 structural: 99% VaR over a 500 day window is the 5th worst day, so one
-corrupt print shifts the ranking by a single place and the number
-absorbs it. Expected shortfall averages the tail, so it takes the full
-weight of the fake loss. Freezing every series for 20% of the lookback
-window still leaves VaR unchanged.
+corrupt print shifts the ranking by a single place and the number absorbs
+it. Expected shortfall averages the tail, so it takes the full weight of
+the fake loss. Freezing every series for 20% of the lookback window still
+leaves VaR unchanged.
 
 Two things follow. You cannot use the headline risk number as your data
 alarm, which is the argument for dedicated data quality monitoring. And
 as the industry shifts from VaR toward expected shortfall, data errors
 get more load bearing, not less.
 
-After detection and repair, expected shortfall returns to within 5% of
+After detection and repair, expected shortfall returns to within 0.5% of
 its clean value with every applied point flagged. The stressed VaR window
 search independently lands on the engineered 2022 high volatility era at
-roughly 2.9x ordinary VaR.
+roughly 2.8x ordinary VaR.
 
-## How a big move gets decided
+## The detector: a model that learned the faults, because the injector is the teacher
 
-A big move on its own is not evidence of an error. The model reads two
-tiebreakers among its five features: did correlated series move the same
-day (a market event), and was the move undone the next day (a bad print).
-A big move with neither is a possible level shift, and it is held for a
-human rather than repaired, because interpolating a real repricing
-destroys real history. In the demo, one such day across six years is
-held; it was not planted.
+An unsupervised model can only rank days as unusual. The fault injector
+can manufacture unlimited labeled faults, so a gradient boosting
+classifier is trained on sixteen synthetic histories full of planted
+frozen feeds, bad prints, gaps and vendor level shifts, then run on the
+demo history, which it never saw. It finds and correctly names all three
+planted faults on every affected day, and scans six years in a fraction
+of a second.
 
-## How repairs are accepted
+Measured on ten more histories it had never seen, about 100,000
+series-days: 97% recall and 95% precision on fault days, with false
+alarms on 0.02% of clean days. Broken down, it is essentially perfect on
+sustained faults (gaps, frozen feeds) and around 60% on one-day events
+(bad prints, level shifts), because one day is one data point and a big
+move is genuinely ambiguous. That split drives the whole design.
 
-Each proposal is scored alone, using only data the pipeline would really
-have (no clean reference anywhere). A KS test checks that the repaired
-region keeps the series' own return distribution; a VaR impact check
-routes material changes to human review. Only accepted proposals touch
-the staging copy. In the demo, a 20 day linear interpolation of the credit
-spread gap is rejected by the KS test because it flattens volatility,
-which is exactly the failure that guardrail exists to catch.
+## What happens to a fault, and why single-day calls need a person
+
+Repairs are scored in date order against the data as it stands. A repair
+that changes the series' own return distribution is rejected outright.
+Everything else is applied, but a repair covering a single day is signed
+off by a person first, because that is exactly where the detector is
+weakest.
+
+In the demo that rule earns its keep: four single-day repairs go for
+sign-off and the reviewer turns down three of them, because they are real
+2022 stress-era moves rather than faults. Zero real market moves are
+repaired. Separately, the 20 day gap fill is rejected by the distribution
+guardrail, because a straight line has no volatility, and those points
+stay on an exception report until a person picks a proxy series.
 
 ## What it covers
 
@@ -73,7 +85,7 @@ which is exactly the failure that guardrail exists to catch.
 | LLM narrative with number-check guardrail and template fallback | src/agent.py |
 | Random forest imputation benchmarked against the simple methods | src/remediation.py, src/evaluation.py |
 | Supervised fault classifier trained on synthetic worlds, tested on a held-out world | src/ml_detection.py |
-| 75 tests, including a headless run of the app through every tab and widget | tests/ |
+| 76 tests, including a headless run of the app through every tab and widget | tests/ |
 
 ## Run it
 

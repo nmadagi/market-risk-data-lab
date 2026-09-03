@@ -142,3 +142,33 @@ eight possible level shifts; 1.9.0 (what the cloud installs) flags one, with
 the three planted faults found and named either way. Pinned 1.9.0 so the
 deployed app and the laptop agree, and so a number quoted from one is true
 of the other.
+
+The curve was not a curve.
+
+- The three rate tenors were generated as independent processes:
+  correlation of daily changes 0.007, R-squared of the 5y on its peers
+  0.0009. Real adjacent curve points sit at 0.85 to 0.97. That made
+  "rebuild from correlated series" a fiction: the regression predicted
+  nothing, the rebuilt fortnight wobbled 0.2bp against a real 5.6, and
+  the repair was further from the truth than the broken data it replaced.
+  Found by reading the rebuilt numbers rather than by a failing test.
+- Fixed with a common level factor: each tenor loads on one shared daily
+  shock plus a small private one, scaled to keep each series' own
+  volatility unchanged. Correlations now 0.89, R-squared 0.855, and the
+  curve can still steepen. The rebuild went from 14.8bp average error to
+  2.6bp, better than the 7.9bp of leaving it broken, and its tail ratio
+  from 0.2 to 1.02.
+- Implied vol now spikes in level during the stress era rather than only
+  becoming noisier, which is what implied vol actually does in a crisis.
+- Twelve labeled examples of a one-day fault was too few: the model had
+  never seen a spike that only partly reverted and hedged on the demo's
+  own bad print. Now several faults per world across sixteen worlds, so
+  96 spikes instead of 12. Cheap, because generating the history is the
+  slow part, not planting faults in it.
+- Two consequences of the more realistic data. Genuine stress-era moves
+  now look enough like one-day faults that the model proposes repairing
+  them, so no single-day repair is applied without a person signing it
+  off. And each repair is now scored against the data as it stands rather
+  than the original broken frame, because a frozen fortnight was sitting
+  inside the distribution window of a bad print 26 days later and getting
+  that repair rejected.

@@ -23,6 +23,7 @@ from src import risk
 SHORT_GAP_MAX = 5
 KS_PVALUE_MIN = 0.05
 VAR_IMPACT_REVIEW_PCT = 5.0
+MIN_AUTO_DAYS = 2          # single-day calls always need a person
 KS_WINDOW = 30
 
 
@@ -68,10 +69,16 @@ def guardrail_check(base: pd.DataFrame, proposal: dict) -> dict:
 
     ks_pvalue     : returns in a window around the repair vs this series'
                     own returns everywhere else. Low p means the repair
-                    changed the local distribution shape.
-    var_impact_pct: how much this repair alone moves 99 pct VaR. Material
-                    impact is not a rejection, it is a routing decision:
-                    a human signs off, the pipeline does not.
+                    changed the local distribution shape, and the repair is
+                    rejected outright.
+    needs_review  : the repair still happens, but a person signs it off
+                    rather than the pipeline. Triggered by a material VaR
+                    impact, or by the repair covering a single day. The
+                    single-day rule comes straight from measurement: the
+                    detector is essentially perfect on sustained faults and
+                    around 60 pct on one-day events, and a one-day call is
+                    where an automatic repair is most likely to smooth away
+                    a real market move.
     """
     series, dates = proposal["series"], proposal["dates"]
     trial = _apply_one(base, proposal)
@@ -86,8 +93,9 @@ def guardrail_check(base: pd.DataFrame, proposal: dict) -> dict:
     var_after = risk.var99(risk.pnl_vector(trial))
     impact = abs(var_after - var_before) / abs(var_before) * 100
 
-    needs_review = impact > VAR_IMPACT_REVIEW_PCT
-    accepted = ks_p >= KS_PVALUE_MIN and not needs_review
+    accepted = ks_p >= KS_PVALUE_MIN
+    needs_review = accepted and (impact > VAR_IMPACT_REVIEW_PCT
+                                 or len(dates) < MIN_AUTO_DAYS)
     return {"series": series, "method": proposal["method"],
             "type": proposal["type"], "points": len(dates),
             "ks_pvalue": round(float(ks_p), 4),
@@ -95,10 +103,21 @@ def guardrail_check(base: pd.DataFrame, proposal: dict) -> dict:
             "needs_review": bool(needs_review), "accepted": bool(accepted)}
 
 
-def run(corrupted: pd.DataFrame, findings: pd.DataFrame):
-    """Full loop: propose, check each alone, apply only the accepted.
+def run(corrupted: pd.DataFrame, findings: pd.DataFrame, reviewer=None):
+    """Full loop: propose, check each in turn, apply only the accepted.
 
     Returns (staged, flags, proposals, checks, unresolved).
+
+    `reviewer` stands in for the person who signs off the repairs the
+    guardrails route to review. It is given a proposal and returns True to
+    approve. Without one every routed repair is treated as approved.
+
+    Proposals are scored in date order against the data as it stands, so a
+    repair is judged in the context of the repairs already accepted before
+    it. Scoring every proposal against the original broken frame instead
+    let one fault contaminate another's test window: a bad print 26 days
+    after a frozen feed was rejected because the frozen days sat inside the
+    window its distribution check looked at.
 
     staged starts from the working frame. Points with no accepted repair
     are carried forward so the risk engine can run at all, but that is a
@@ -108,10 +127,19 @@ def run(corrupted: pd.DataFrame, findings: pd.DataFrame):
     with it. The pipeline never silently fills.
     """
     base = corrupted.ffill()
-    proposals = propose(corrupted, findings)
-    checks = [guardrail_check(base, p) for p in proposals]
-    accepted = [p for p, c in zip(proposals, checks) if c["accepted"]]
-    staged, flags = apply_to_staging(base, accepted)
+    proposals = sorted(propose(corrupted, findings), key=lambda p: p["dates"][0])
+    staged = base.copy()
+    checks, accepted = [], []
+    for p in proposals:
+        c = guardrail_check(staged, p)
+        if c["needs_review"] and reviewer is not None:
+            c["approved_at_review"] = bool(reviewer(p))
+            c["accepted"] = c["accepted"] and c["approved_at_review"]
+        checks.append(c)
+        if c["accepted"]:
+            staged = _apply_one(staged, p)
+            accepted.append(p)
+    _, flags = apply_to_staging(base, accepted)
     unresolved = _unresolved(corrupted, proposals, checks)
     return staged, flags, proposals, checks, unresolved
 

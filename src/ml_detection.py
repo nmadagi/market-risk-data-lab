@@ -151,39 +151,62 @@ from data.generate import generate_market_data
 from src.corruption import inject_gap, inject_spike, inject_splice, inject_stale
 
 CLASSES = ["normal", "stale", "spike", "gap", "splice"]
-TRAIN_SEEDS = tuple(range(1000, 1012))     # twelve synthetic worlds
+TRAIN_SEEDS = tuple(range(1000, 1016))     # sixteen synthetic worlds
 TEST_SEED = 42                             # the demo world, never trained on
+
+# Faults planted per world. One of each was too few: with twelve examples of
+# a one-day event the model never saw the natural spread of the reversal
+# feature and hedged on anything slightly unusual. Several per world costs
+# nothing (the slow part is generating the history) and multiplies the
+# labeled examples of the rare classes.
+PER_WORLD = {"stale": 6, "spike": 6, "gap": 6, "splice": 3}
 
 
 def make_world(seed: int):
-    """One synthetic history with four random faults and a per-day label."""
+    """One synthetic history with many labeled faults planted in it.
+
+    Splices are capped at one per series: each splice shifts all history
+    before its seam, so two on the same series would compound into levels
+    no market produces.
+    """
     rng = np.random.default_rng(seed)
     clean = generate_market_data(seed)
-    cols = list(clean.columns)
-    dates = clean.index
-    lo, hi = 300, len(dates) - 40          # leave warmup and a tail
+    cols, dates = list(clean.columns), clean.index
     labels = pd.DataFrame("normal", index=dates, columns=cols)
+    used = {c: np.zeros(len(dates), bool) for c in cols}
+    spliced = set()
     out = clean
-    chosen = rng.choice(cols, size=4, replace=False)
+    lo, hi = 300, len(dates) - 40
 
-    s = chosen[0]; start = dates[rng.integers(lo, hi - 30)]; n = int(rng.integers(5, 25))
-    out, _ = inject_stale(out, s, start, n)
-    frozen = out.loc[start:].index[1:n]
-    labels.loc[frozen, s] = "stale"
-
-    s = chosen[1]; d = dates[rng.integers(lo, hi)]
-    out, _ = inject_spike(out, s, d, n_sigma=float(rng.uniform(5, 10)))
-    labels.loc[d, s] = "spike"
-
-    s = chosen[2]; start = dates[rng.integers(lo, hi - 35)]; n = int(rng.integers(5, 30))
-    out, _ = inject_gap(out, s, start, n)
-    labels.loc[out.index[out[s].isna()], s] = "gap"
-
-    s = chosen[3]; seam = dates[rng.integers(lo, hi)]
-    shift = float(rng.uniform(4, 8) * clean[s].diff().std() * rng.choice([-1, 1]))
-    out, _ = inject_splice(out, s, seam, shift)
-    after = out.loc[seam:].index[1]      # the first day the level shift is visible
-    labels.loc[after, s] = "splice"
+    plan = [k for k, n in PER_WORLD.items() for _ in range(n)]
+    rng.shuffle(plan)
+    for kind in plan:
+        for _ in range(30):                     # a few tries to find room
+            col = cols[rng.integers(len(cols))]
+            if kind == "splice" and col in spliced:
+                continue
+            n = 1 if kind in ("spike", "splice") else int(rng.integers(5, 25))
+            i = int(rng.integers(lo, hi - n))
+            if used[col][max(0, i - 3):i + n + 3].any():
+                continue
+            start = dates[i]
+            if kind == "stale":
+                out, _ = inject_stale(out, col, start, n + 1)
+                labels.loc[dates[i + 1:i + 1 + n], col] = "stale"
+            elif kind == "gap":
+                out, _ = inject_gap(out, col, start, n)
+                labels.loc[dates[i:i + n], col] = "gap"
+            elif kind == "spike":
+                out, _ = inject_spike(out, col, start, float(rng.uniform(4, 12)))
+                labels.loc[dates[i:i + 1], col] = "spike"
+            else:
+                shift = float(rng.uniform(3, 9) * clean[col].diff().std()
+                              * rng.choice([-1, 1]))
+                out, _ = inject_splice(out, col, start, shift)
+                labels.loc[dates[i + 1:i + 2], col] = "splice"
+                spliced.add(col)
+            used[col][max(0, i - 3):i + n + 3] = True
+            break
     return out, labels
 
 
@@ -235,14 +258,20 @@ def classifier_scorecard(fault_log: pd.DataFrame, flagged: pd.DataFrame) -> pd.D
     return pd.DataFrame(rows)
 
 
+REPAIR_CONFIDENCE = 0.80   # below this the model is guessing; send it to a human
+
+
 def findings_from_model(flagged: pd.DataFrame) -> pd.DataFrame:
     """Turn per-day predictions into events in the findings schema the
     remediation step consumes: one row per run of consecutive flagged days
     on one series with one predicted class.
 
-    stale, gap and spike become repair candidates. A predicted splice is a
-    possible level shift: it is held for a human, never repaired, because a
-    permanent shift cannot be told from a real repricing inside the series.
+    stale, gap and spike become repair candidates, but only when the model
+    is confident. A low confidence call is the model guessing, and guessing
+    is exactly when an automatic repair is most likely to erase a real
+    market move, so those go to a human instead. A predicted splice is
+    always held: a permanent shift cannot be told from a real repricing
+    from inside the series.
     """
     from src.detection import VERDICT_BREAK, VERDICT_ERROR
     cols = ["type", "series", "start", "length", "detail", "verdict"]
@@ -260,10 +289,12 @@ def findings_from_model(flagged: pd.DataFrame) -> pd.DataFrame:
         runs.append(run)
         for run in runs:
             conf = g[g["date"].isin(run)]["confidence"].mean()
-            if kind == "splice":
+            if kind == "splice" or conf < REPAIR_CONFIDENCE:
+                why = ("possible level shift" if kind == "splice"
+                       else f"unclear, model called it {kind}")
                 rows.append({"type": "spike", "series": series, "start": run[0],
                              "length": len(run),
-                             "detail": f"possible level shift, confidence {conf:.2f}",
+                             "detail": f"{why}, confidence {conf:.2f}",
                              "verdict": VERDICT_BREAK})
             elif kind == "spike":
                 rows.append({"type": "spike", "series": series, "start": run[0],
