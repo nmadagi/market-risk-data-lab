@@ -77,7 +77,7 @@ def trained_model(version: str):
 def load_all(version: str):
     clean = generate_market_data()
     corrupted, fault_log = apply_default_faults(clean)
-    model, train_seconds = trained_model(version)
+    model, _ = trained_model(version)
     t0 = time.perf_counter()
     flagged = ml_detection.classify(corrupted, model)
     score_seconds = time.perf_counter() - t0
@@ -85,11 +85,11 @@ def load_all(version: str):
     staged, flags, proposals, checks, unresolved = remediation.run(
         corrupted, findings)
     return (clean, corrupted, fault_log, findings, proposals, staged, flags,
-            checks, unresolved, flagged, train_seconds, score_seconds)
+            checks, unresolved, flagged, score_seconds)
 
 
 (clean, corrupted, fault_log, findings, proposals, staged, flags, checks,
- unresolved, flagged, train_seconds, score_seconds) = load_all(
+ unresolved, flagged, score_seconds) = load_all(
     PIPELINE_VERSION)
 
 
@@ -200,11 +200,10 @@ with tabs[1]:
     st.subheader("Find: one pass over six years, every planted fault found and named")
     held = findings[findings["verdict"] == detection.VERDICT_BREAK]
     repairable = findings[findings["verdict"] != detection.VERDICT_BREAK]
-    a, b, c_, d_ = st.columns(4)
+    a, b, c_ = st.columns(3)
     a.metric("series-days scanned", f"{corrupted.size:,}")
     b.metric("years of history", f"{(corrupted.index[-1] - corrupted.index[0]).days / 365.25:.1f}")
-    c_.metric("model trained in", f"{train_seconds:.1f}s")
-    d_.metric("scored this history in", f"{score_seconds:.2f}s")
+    c_.metric("scanned in", f"{score_seconds:.2f}s")
     st.write(
         f"**{len(fault_log)} planted faults, all {len(fault_log)} found and "
         f"named correctly** (the frozen feed on every one of its "
