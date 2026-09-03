@@ -153,6 +153,8 @@ def _unresolved(corrupted, proposals, checks):
     for p, c in zip(proposals, checks):
         if c["accepted"]:
             continue
+        if c.get("needs_review") and c.get("approved_at_review") is False:
+            continue        # a person judged it a real move, so nothing is broken
         why = ("repair routed to human review on VaR impact"
                if c["needs_review"] else
                f"repair rejected by distribution check (ks p={c['ks_pvalue']})")

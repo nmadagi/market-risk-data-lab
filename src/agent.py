@@ -11,41 +11,67 @@ import os
 import re
 
 
-def build_facts(findings, checks, var_corrupt, var_repaired) -> dict:
-    accepted = [c for c in checks if c["accepted"]]
-    review = [c for c in checks if c["needs_review"]]
+def build_facts(findings, checks, var_corrupt, var_repaired,
+                es_corrupt=None, es_repaired=None) -> dict:
+    auto = [c for c in checks if c["accepted"] and not c["needs_review"]]
+    # without a reviewer the pipeline treats routed repairs as approved
+    review_ok = [c for c in checks if c["accepted"] and c["needs_review"]
+                 and c.get("approved_at_review") is not False]
+    review_no = [c for c in checks
+                 if c["needs_review"] and c.get("approved_at_review") is False]
     rejected = [c for c in checks if not c["accepted"] and not c["needs_review"]]
     held = 0
     if len(findings) and "verdict" in findings:
         held = int((findings["verdict"] == "level break, review").sum())
-    return {
+    facts = {
         "n_findings": len(findings),
-        "n_faults": len(checks),
+        "n_faults": len(auto) + len(review_ok) + len(rejected),
         "n_held": held,
-        "n_accepted": len(accepted),
-        "n_review": len(review),
+        "n_accepted": len(auto) + len(review_ok),
+        "n_auto": len(auto),
+        "n_review_ok": len(review_ok),
+        "n_review_no": len(review_no),
+        "n_review": len(review_ok) + len(review_no),
         "n_rejected": len(rejected),
         "var_corrupt_m": round(var_corrupt / 1e6, 2),
         "var_repaired_m": round(var_repaired / 1e6, 2),
-        "series_touched": sorted({c["series"] for c in checks}),
+        "series_touched": sorted({c["series"] for c in auto + review_ok + rejected}),
     }
+    if es_corrupt is not None and es_repaired is not None:
+        facts["es_corrupt_m"] = round(es_corrupt / 1e6, 2)
+        facts["es_repaired_m"] = round(es_repaired / 1e6, 2)
+    return facts
 
 
 def template_report(facts: dict) -> str:
     n_faults = facts.get("n_faults", facts["n_findings"])
-    lines = [
-        f"Data quality report: {n_faults} faults found across "
-        f"{len(facts['series_touched'])} series ({', '.join(facts['series_touched'])})"
-        + (f", plus {facts['n_held']} possible level shifts held for review."
-           if facts.get("n_held") else "."),
-        f"{facts['n_accepted']} repairs auto-accepted by guardrails; "
-        + (f"{facts['n_rejected']} rejected; " if "n_rejected" in facts else "")
-        + f"{facts['n_review']} routed to human review on VaR materiality.",
-        f"99 pct VaR moved from {facts['var_corrupt_m']}M (corrupted inputs) to "
-        f"{facts['var_repaired_m']}M after repair. Every applied point is flagged "
-        "and reversible; the golden copy was never edited in place.",
-    ]
-    return " ".join(lines)
+    first = (f"Data quality report: {n_faults} faults found across "
+             f"{len(facts['series_touched'])} series ({', '.join(facts['series_touched'])})")
+    if facts.get("n_held"):
+        first += f", plus {facts['n_held']} possible level shifts held for review"
+    first += "."
+    parts = []
+    if "n_auto" in facts:
+        parts.append(f"{facts['n_auto']} repaired automatically")
+        if facts.get("n_review_ok") or facts.get("n_review_no"):
+            parts.append(f"{facts['n_review_ok']} approved at review")
+            parts.append(f"{facts['n_review_no']} rejected at review as real market moves")
+        parts.append(f"{facts['n_rejected']} rejected by a guardrail")
+        second = "; ".join(parts) + "."
+    else:
+        second = (f"{facts['n_accepted']} repairs auto-accepted by guardrails; "
+                  + (f"{facts['n_rejected']} rejected; " if "n_rejected" in facts else "")
+                  + f"{facts['n_review']} routed to human review on VaR materiality.")
+    if "es_corrupt_m" in facts:
+        third = (f"Expected shortfall moved from {facts['es_corrupt_m']}M on the "
+                 f"corrupted inputs to {facts['es_repaired_m']}M after repair; "
+                 f"99 pct VaR from {facts['var_corrupt_m']}M to {facts['var_repaired_m']}M.")
+    else:
+        third = (f"99 pct VaR moved from {facts['var_corrupt_m']}M (corrupted inputs) to "
+                 f"{facts['var_repaired_m']}M after repair.")
+    third += (" Every applied point is flagged and reversible; the golden copy "
+              "was never edited in place.")
+    return " ".join([first, second, third])
 
 
 def numbers_check(text: str, facts: dict) -> bool:

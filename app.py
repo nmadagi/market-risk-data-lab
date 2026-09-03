@@ -244,6 +244,14 @@ with tabs[1]:
     show = repairable.reset_index(drop=True).copy()
     show["start"] = show["start"].dt.date
     show["decision"] = show["verdict"].fillna("repair proposed")
+    n_extra = len(show) - len(fault_log)
+    st.write(
+        f"Repair candidates: the {len(fault_log)} planted faults"
+        + (f", plus {n_extra} one-day calls the model made on genuine "
+           "market moves. Those are exactly why one-day repairs go to a "
+           "person before they touch anything; see what the reviewer does "
+           "with them below." if n_extra > 0 else ".")
+    )
     table(show[["series", "type", "start", "length", "detail", "decision"]]
           .rename(columns={"length": "days"}))
 
@@ -297,7 +305,7 @@ with tabs[1]:
             f"The one rejected by a guardrail is worth a look: a "
             f"{rejected[0]['days']} day straight line fill has no volatility, "
             "and a check that compares return distributions catches exactly "
-            f"that. The {len(unresolved)} points it would have filled stay on "
+            f"that. The {rejected[0]['days']} points it would have filled stay on "
             "the exception report, carried forward as a stopgap and clearly "
             "labeled, until a person picks a proxy series."
         )
@@ -319,7 +327,8 @@ with tabs[1]:
         table(flags)
     with st.expander(f"Exception report: {len(unresolved)} unresolved points"):
         table(unresolved)
-    facts = agent.build_facts(findings, checks, var_corrupt, var_repaired)
+    facts = agent.build_facts(findings, checks, var_corrupt, var_repaired,
+                              es_corrupt, es_repaired)
     text, source = agent.narrative(facts)
     st.info(f"Morning report ({source}): {text}")
 
