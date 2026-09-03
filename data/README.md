@@ -15,16 +15,20 @@ The golden copy: what the bank's official history should look like.
 | column | what it is | unit | typical level |
 |---|---|---|---|
 | date | business day | YYYY-MM-DD | |
-| usd2y | 2 year USD swap rate | percent | 1 to 4 |
-| usd5y | 5 year USD swap rate | percent | 1 to 7 |
-| usd10y | 10 year USD swap rate | percent | 2 to 6 |
-| swaption_vol | implied volatility of an option on the swap rate | vol points | 70 to 165 |
-| eurusd | euro to dollar exchange rate | dollars per euro | 0.84 to 1.27 |
-| credit_spread | extra yield a company pays over the government | basis points | 48 to 158 |
+| usd2y | 2 year USD swap rate | percent | 0.7 to 4.3 |
+| usd5y | 5 year USD swap rate | percent | 0.2 to 4.1 |
+| usd10y | 10 year USD swap rate | percent | 1.8 to 4.6 |
+| swaption_vol | implied volatility of an option on the swap rate | vol points | 69 to 163 |
+| eurusd | euro to dollar exchange rate | dollars per euro | 0.66 to 1.17 |
+| credit_spread | extra yield a company pays over the government | basis points | 105 to 240 |
 
-Rates and the spread are simulated as mean reverting processes in level
-space. Implied vol mean reverts in log space. EURUSD is a driftless
-random walk in log space. All four get extra volatility inside the 2022
+The three rates share one common daily shock plus a small private one,
+so adjacent curve points move together at about 0.89 correlation, the way
+a real yield curve does, while the curve can still steepen and flatten.
+Rates and the spread mean revert in level space. Implied vol mean reverts
+in log space and is pulled toward a higher level inside the 2022 stress
+era, which is what implied vol does in a crisis. EURUSD is a driftless
+random walk in log space. Every series gets extra volatility inside the
 stress era.
 
 ## market_data_corrupted.csv

@@ -229,7 +229,7 @@ with tabs[1]:
     )
     st.write(
         "How: the fault injector can manufacture unlimited labeled faults, so "
-        "a gradient boosting model was trained on twelve synthetic histories "
+        "a gradient boosting model was trained on sixteen synthetic histories "
         "full of planted frozen feeds, bad prints, gaps and vendor level "
         "shifts, then run on this history, which it had never seen. It reads "
         "five numbers per series per day (size of the move against normal, "
