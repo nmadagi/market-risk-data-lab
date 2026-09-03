@@ -172,3 +172,11 @@ The curve was not a curve.
   than the original broken frame, because a frozen fortnight was sitting
   inside the distribution window of a bad print 26 days later and getting
   that repair rejected.
+
+Stale modules on the hosted runtime. Three times a push produced a
+TypeError on the live site while the same commit passed every test
+locally: the runtime reran app.py but kept the previously imported src.*
+modules. The log showed why: "inotify instance limit reached", after which
+the file watcher was dead. .streamlit/config.toml now sets
+fileWatcherType = "poll", which uses no inotify handles. If it ever
+happens again the fix is Manage app > Reboot app.

@@ -1,0 +1,8 @@
+[server]
+# The hosted runtime kept hitting the OS inotify instance limit, after which
+# the watcher died and edited modules under src/ were never reloaded: the
+# app ran new app.py against stale src.*. Polling uses no inotify handles.
+fileWatcherType = "poll"
+
+[browser]
+gatherUsageStats = false
