@@ -73,6 +73,68 @@ stay on an exception report until a person picks a proxy series.
 
 ## What it covers
 
+How the modules fit together (each box is one file):
+
+```mermaid
+flowchart TD
+
+subgraph group_workflow["Data quality workflow"]
+  node_app["Streamlit app<br/>[app.py]"]
+  node_faults["Fault injection<br/>[corruption.py]"]
+  node_detection["Rule detection<br/>[detection.py]"]
+  node_classifier["Fault classifier<br/>[ml_detection.py]"]
+  node_remediation["Guarded remediation<br/>[remediation.py]"]
+end
+
+subgraph group_analytics["Risk and evaluation"]
+  node_risk["Risk engine<br/>[risk.py]"]
+  node_evaluation["Repair evaluation<br/>[evaluation.py]"]
+end
+
+subgraph group_reporting["Reporting"]
+  node_report["Narrative report<br/>[agent.py]"]
+end
+
+subgraph group_data["Synthetic data"]
+  node_generator["History generator<br/>[generate.py]"]
+  node_dataset[("CSV snapshots")]
+end
+
+node_user(("Analyst"))
+node_reviewer(("Human reviewer"))
+node_anthropic{{"Anthropic API"}}
+
+node_user -->|"uses"| node_app
+node_app -->|"creates history"| node_generator
+node_app -->|"injects faults"| node_faults
+node_app -->|"finds anomalies"| node_detection
+node_app -->|"classifies faults"| node_classifier
+node_app -->|"stages repairs"| node_remediation
+node_app -->|"calculates risk"| node_risk
+node_app -.->|"evaluates repairs"| node_evaluation
+node_app -->|"requests narrative"| node_report
+node_generator -->|"snapshotted as"| node_dataset
+node_classifier -->|"trains on worlds"| node_generator
+node_classifier -->|"generates training faults"| node_faults
+node_classifier -->|"compares results"| node_detection
+node_remediation -->|"uses findings"| node_detection
+node_remediation -->|"checks VaR impact"| node_risk
+node_evaluation -->|"benchmarks fills"| node_remediation
+node_remediation -.->|"routes proposals"| node_reviewer
+node_report -.->|"requests draft"| node_anthropic
+
+classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
+classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
+classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
+classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
+classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
+class node_app,node_faults,node_detection,node_classifier,node_remediation,node_reviewer toneBlue
+class node_risk,node_evaluation toneAmber
+class node_report,node_anthropic toneMint
+class node_generator,node_dataset toneRose
+class node_user toneIndigo
+```
+
 | Capability | Where |
 |---|---|
 | Time series construction (golden copy, seeded synthetic) | data/generate.py |
